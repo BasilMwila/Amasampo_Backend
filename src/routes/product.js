@@ -1,5 +1,35 @@
+/* eslint-disable linebreak-style */
+/* eslint-disable eqeqeq */
+/* eslint-disable linebreak-style */
+/* eslint-disable arrow-parens */
+/* eslint-disable linebreak-style */
+/* eslint-disable newline-per-chained-call */
+/* eslint-disable import/order */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-plusplus */
+/* eslint-disable linebreak-style */
+/* eslint-disable radix */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-await-in-loop */
+/* eslint-disable no-restricted-syntax */
+/* eslint-disable linebreak-style */
 /* eslint-disable no-unused-vars */
-// routes/products.js - Product routes
+/* eslint-disable linebreak-style */
+/* eslint-disable object-curly-newline */
+/* eslint-disable camelcase */
+/* eslint-disable no-trailing-spaces */
+/* eslint-disable import/newline-after-import */
+/* eslint-disable linebreak-style */
+/* eslint-disable quotes */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-return-await */
+/* eslint-disable linebreak-style */
+/* eslint-disable eol-last */
+/* eslint-disable operator-linebreak */
+/* eslint-disable comma-dangle */
+/* eslint-disable arrow-body-style */
+/* eslint-disable linebreak-style */
+// routes/product.js - Product routes
 const express = require('express');
 const router = express.Router();
 const { dbQueries } = require('../config/database');
@@ -10,6 +40,132 @@ const {
   optionalAuth 
 } = require('../middleware/auth');
 const { productSchemas, validate, validateQuery } = require('../validation/schemas');
+
+// @route   GET /api/products/featured
+// @desc    Get featured products
+// @access  Public
+router.get('/featured', async (req, res) => {
+  try {
+    const limit = req.query.limit || 10;
+    
+    const result = await dbQueries.query(
+      `SELECT p.*, c.name as category_name, u.name as seller_name, u.shop_name
+       FROM products p
+       LEFT JOIN categories c ON p.category_id = c.id
+       LEFT JOIN users u ON p.seller_id = u.id
+       WHERE p.is_active = true AND p.is_featured = true
+       ORDER BY p.created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    res.json({
+      products: result.rows
+    });
+  } catch (error) {
+    console.error('Get featured products error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_FEATURED_PRODUCTS_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/products/seller/:sellerId
+// @desc    Get products by seller
+// @access  Public
+router.get('/seller/:sellerId', async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    const result = await dbQueries.query(
+      `SELECT p.*, c.name as category_name, u.name as seller_name, u.shop_name
+       FROM products p
+       LEFT JOIN categories c ON p.category_id = c.id
+       LEFT JOIN users u ON p.seller_id = u.id
+       WHERE p.seller_id = $1 AND p.is_active = true
+       ORDER BY p.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [sellerId, limit, offset]
+    );
+
+    // Get total count
+    const countResult = await dbQueries.query(
+      'SELECT COUNT(*) as total FROM products WHERE seller_id = $1 AND is_active = true',
+      [sellerId]
+    );
+    const total = parseInt(countResult.rows[0].total);
+
+    res.json({
+      products: result.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        has_next: page * limit < total,
+        has_prev: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Get seller products error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_SELLER_PRODUCTS_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/products/category/:categoryId
+// @desc    Get products by category
+// @access  Public
+router.get('/category/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    const result = await dbQueries.query(
+      `SELECT p.*, c.name as category_name, u.name as seller_name, u.shop_name
+       FROM products p
+       LEFT JOIN categories c ON p.category_id = c.id
+       LEFT JOIN users u ON p.seller_id = u.id
+       WHERE p.category_id = $1 AND p.is_active = true
+       ORDER BY p.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [categoryId, limit, offset]
+    );
+
+    // Get total count
+    const countResult = await dbQueries.query(
+      'SELECT COUNT(*) as total FROM products WHERE category_id = $1 AND is_active = true',
+      [categoryId]
+    );
+    const total = parseInt(countResult.rows[0].total);
+
+    res.json({
+      products: result.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        has_next: page * limit < total,
+        has_prev: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Get category products error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_CATEGORY_PRODUCTS_ERROR'
+    });
+  }
+});
 
 // @route   GET /api/products
 // @desc    Get all products with optional filters
@@ -173,36 +329,6 @@ router.get('/', validateQuery(productSchemas.search), async (req, res) => {
   }
 });
 
-// @route   GET /api/products/featured
-// @desc    Get featured products
-// @access  Public
-router.get('/featured', async (req, res) => {
-  try {
-    const limit = req.query.limit || 10;
-    
-    const result = await dbQueries.query(
-      `SELECT p.*, c.name as category_name, u.name as seller_name, u.shop_name
-       FROM products p
-       LEFT JOIN categories c ON p.category_id = c.id
-       LEFT JOIN users u ON p.seller_id = u.id
-       WHERE p.is_active = true AND p.is_featured = true
-       ORDER BY p.created_at DESC
-       LIMIT $1`,
-      [limit]
-    );
-
-    res.json({
-      products: result.rows
-    });
-  } catch (error) {
-    console.error('Get featured products error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_FEATURED_PRODUCTS_ERROR'
-    });
-  }
-});
-
 // @route   GET /api/products/:id
 // @desc    Get single product
 // @access  Public
@@ -331,102 +457,6 @@ router.delete('/:id', authenticateToken, authorize('seller'), checkProductOwners
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'DELETE_PRODUCT_ERROR'
-    });
-  }
-});
-
-// @route   GET /api/products/seller/:sellerId
-// @desc    Get products by seller
-// @access  Public
-router.get('/seller/:sellerId', async (req, res) => {
-  try {
-    const { sellerId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
-
-    const result = await dbQueries.query(
-      `SELECT p.*, c.name as category_name, u.name as seller_name, u.shop_name
-       FROM products p
-       LEFT JOIN categories c ON p.category_id = c.id
-       LEFT JOIN users u ON p.seller_id = u.id
-       WHERE p.seller_id = $1 AND p.is_active = true
-       ORDER BY p.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [sellerId, limit, offset]
-    );
-
-    // Get total count
-    const countResult = await dbQueries.query(
-      'SELECT COUNT(*) as total FROM products WHERE seller_id = $1 AND is_active = true',
-      [sellerId]
-    );
-    const total = parseInt(countResult.rows[0].total);
-
-    res.json({
-      products: result.rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-        has_next: page * limit < total,
-        has_prev: page > 1
-      }
-    });
-  } catch (error) {
-    console.error('Get seller products error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_SELLER_PRODUCTS_ERROR'
-    });
-  }
-});
-
-// @route   GET /api/products/category/:categoryId
-// @desc    Get products by category
-// @access  Public
-router.get('/category/:categoryId', async (req, res) => {
-  try {
-    const { categoryId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
-
-    const result = await dbQueries.query(
-      `SELECT p.*, c.name as category_name, u.name as seller_name, u.shop_name
-       FROM products p
-       LEFT JOIN categories c ON p.category_id = c.id
-       LEFT JOIN users u ON p.seller_id = u.id
-       WHERE p.category_id = $1 AND p.is_active = true
-       ORDER BY p.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [categoryId, limit, offset]
-    );
-
-    // Get total count
-    const countResult = await dbQueries.query(
-      'SELECT COUNT(*) as total FROM products WHERE category_id = $1 AND is_active = true',
-      [categoryId]
-    );
-    const total = parseInt(countResult.rows[0].total);
-
-    res.json({
-      products: result.rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-        has_next: page * limit < total,
-        has_prev: page > 1
-      }
-    });
-  } catch (error) {
-    console.error('Get category products error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_CATEGORY_PRODUCTS_ERROR'
     });
   }
 });

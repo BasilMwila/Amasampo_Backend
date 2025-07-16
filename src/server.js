@@ -1,4 +1,19 @@
+/* eslint-disable linebreak-style */
+/* eslint-disable no-unused-vars */
+/* eslint-disable linebreak-style */
+/* eslint-disable quotes */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-return-await */
+/* eslint-disable linebreak-style */
+/* eslint-disable eol-last */
+/* eslint-disable operator-linebreak */
+/* eslint-disable comma-dangle */
+/* eslint-disable arrow-body-style */
+/* eslint-disable linebreak-style */
+// middleware/auth.js - Authentication middleware
+// utils/password.js - Password hashing utilities
 // server.js - Main server file
+// server.js - Fixed main server file
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -13,26 +28,9 @@ const path = require('path');
 // Load environment variables
 dotenv.config();
 
-// Import routes
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const productRoutes = require('./routes/products');
-const orderRoutes = require('./routes/orders');
-const cartRoutes = require('./routes/cart');
-const messageRoutes = require('./routes/messages');
-const reviewRoutes = require('./routes/reviews');
-const notificationRoutes = require('./routes/notifications');
-const uploadRoutes = require('./routes/upload');
-const categoryRoutes = require('./routes/categories');
-const addressRoutes = require('./routes/addresses');
-const paymentRoutes = require('./routes/payment');
-
-// Import middleware
-const { errorHandler } = require('./middleware/errorHandler');
+// Import middleware first
+const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { authenticateToken } = require('./middleware/auth');
-
-// Import socket handlers
-const { setupSocketHandlers } = require('./socket/handlers');
 
 // Create Express app
 const app = express();
@@ -45,9 +43,6 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
-
-// Setup socket handlers
-setupSocketHandlers(io);
 
 // Security middleware
 app.use(helmet());
@@ -64,14 +59,13 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Middleware
+// Basic middleware
 app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Static files
-// eslint-disable-next-line no-undef
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Health check endpoint
@@ -79,17 +73,33 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// API Routes
+// Import routes
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
+const productRoutes = require('./routes/product');
+const orderRoutes = require('./routes/orders');
+const cartRoutes = require('./routes/cart');
+const messageRoutes = require('./routes/messages');
+const reviewRoutes = require('./routes/reviews');
+const notificationRoutes = require('./routes/notifications');
+const uploadRoutes = require('./routes/upload');
+const categoryRoutes = require('./routes/categories');
+const addressRoutes = require('./routes/addresses');
+const paymentRoutes = require('./routes/payment');
+
+// Public API Routes (no authentication required)
 app.use('/api/auth', authRoutes);
-app.use('/api/users', authenticateToken, userRoutes);
+app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/reviews', reviewRoutes);
+
+// Protected API Routes (authentication required)
+app.use('/api/users', authenticateToken, userRoutes);
 app.use('/api/orders', authenticateToken, orderRoutes);
 app.use('/api/cart', authenticateToken, cartRoutes);
 app.use('/api/messages', authenticateToken, messageRoutes);
-app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', authenticateToken, notificationRoutes);
 app.use('/api/upload', authenticateToken, uploadRoutes);
-app.use('/api/categories', categoryRoutes);
 app.use('/api/addresses', authenticateToken, addressRoutes);
 app.use('/api/payment', authenticateToken, paymentRoutes);
 
@@ -100,6 +110,10 @@ app.use('*', (req, res) => {
 
 // Error handling middleware
 app.use(errorHandler);
+
+// Setup socket handlers (commented out for now to test)
+// const { setupSocketHandlers } = require('./socket/handlers');
+// setupSocketHandlers(io);
 
 // Start server
 const PORT = process.env.PORT || 3000;

@@ -1,5 +1,27 @@
+/* eslint-disable linebreak-style */
+/* eslint-disable no-plusplus */
+/* eslint-disable linebreak-style */
+/* eslint-disable radix */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-await-in-loop */
+/* eslint-disable no-restricted-syntax */
+/* eslint-disable linebreak-style */
 /* eslint-disable no-unused-vars */
-/* eslint-disable no-undef */
+/* eslint-disable linebreak-style */
+/* eslint-disable object-curly-newline */
+/* eslint-disable camelcase */
+/* eslint-disable no-trailing-spaces */
+/* eslint-disable import/newline-after-import */
+/* eslint-disable linebreak-style */
+/* eslint-disable quotes */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-return-await */
+/* eslint-disable linebreak-style */
+/* eslint-disable eol-last */
+/* eslint-disable operator-linebreak */
+/* eslint-disable comma-dangle */
+/* eslint-disable arrow-body-style */
+/* eslint-disable linebreak-style */
 // routes/upload.js - File upload routes
 const express = require('express');
 const router = express.Router();
@@ -8,6 +30,7 @@ const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs').promises;
 const { v4: uuidv4 } = require('uuid');
+const { dbQueries } = require('../config/database');
 
 // Create uploads directory if it doesn't exist
 const createUploadsDir = async () => {

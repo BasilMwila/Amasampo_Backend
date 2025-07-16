@@ -1,3 +1,27 @@
+/* eslint-disable linebreak-style */
+/* eslint-disable no-plusplus */
+/* eslint-disable linebreak-style */
+/* eslint-disable radix */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-await-in-loop */
+/* eslint-disable no-restricted-syntax */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-unused-vars */
+/* eslint-disable linebreak-style */
+/* eslint-disable object-curly-newline */
+/* eslint-disable camelcase */
+/* eslint-disable no-trailing-spaces */
+/* eslint-disable import/newline-after-import */
+/* eslint-disable linebreak-style */
+/* eslint-disable quotes */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-return-await */
+/* eslint-disable linebreak-style */
+/* eslint-disable eol-last */
+/* eslint-disable operator-linebreak */
+/* eslint-disable comma-dangle */
+/* eslint-disable arrow-body-style */
+/* eslint-disable linebreak-style */
 // routes/addresses.js - Address management routes
 const express = require('express');
 const router = express.Router();
@@ -24,6 +48,86 @@ router.get('/', async (req, res) => {
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'GET_ADDRESSES_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/addresses/default
+// @desc    Get default address
+// @access  Private
+router.get('/default', async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const address = await dbQueries.query(
+      'SELECT * FROM addresses WHERE user_id = $1 AND is_default = true',
+      [userId]
+    );
+
+    if (address.rows.length === 0) {
+      // Return first address if no default is set
+      const firstAddress = await dbQueries.query(
+        'SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
+        [userId]
+      );
+
+      if (firstAddress.rows.length === 0) {
+        return res.status(404).json({ 
+          error: 'No addresses found',
+          code: 'NO_ADDRESSES_FOUND'
+        });
+      }
+
+      return res.json({
+        address: firstAddress.rows[0]
+      });
+    }
+
+    res.json({
+      address: address.rows[0]
+    });
+  } catch (error) {
+    console.error('Get default address error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_DEFAULT_ADDRESS_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/addresses/recent
+// @desc    Get recently used addresses
+// @access  Private
+router.get('/recent', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 5;
+
+    // Get addresses used in recent orders
+    const addresses = await dbQueries.query(
+      `SELECT DISTINCT ON (a.id) a.*, MAX(o.created_at) as last_used
+       FROM addresses a
+       LEFT JOIN orders o ON (
+         a.address_line1 = o.delivery_address_line1 AND
+         a.city = o.delivery_city AND
+         a.state = o.delivery_state AND
+         a.zip_code = o.delivery_zip_code
+       )
+       WHERE a.user_id = $1
+       GROUP BY a.id
+       ORDER BY last_used DESC NULLS LAST, a.created_at DESC
+       LIMIT $2`,
+      [userId, limit]
+    );
+
+    res.json({
+      addresses: addresses.rows
+    });
+  } catch (error) {
+    console.error('Get recent addresses error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_RECENT_ADDRESSES_ERROR'
     });
   }
 });
@@ -293,49 +397,6 @@ router.post('/:id/set-default', async (req, res) => {
   }
 });
 
-// @route   GET /api/addresses/default
-// @desc    Get default address
-// @access  Private
-router.get('/default', async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    const address = await dbQueries.query(
-      'SELECT * FROM addresses WHERE user_id = $1 AND is_default = true',
-      [userId]
-    );
-
-    if (address.rows.length === 0) {
-      // Return first address if no default is set
-      const firstAddress = await dbQueries.query(
-        'SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
-        [userId]
-      );
-
-      if (firstAddress.rows.length === 0) {
-        return res.status(404).json({ 
-          error: 'No addresses found',
-          code: 'NO_ADDRESSES_FOUND'
-        });
-      }
-
-      return res.json({
-        address: firstAddress.rows[0]
-      });
-    }
-
-    res.json({
-      address: address.rows[0]
-    });
-  } catch (error) {
-    console.error('Get default address error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_DEFAULT_ADDRESS_ERROR'
-    });
-  }
-});
-
 // @route   POST /api/addresses/validate
 // @desc    Validate address
 // @access  Private
@@ -377,43 +438,6 @@ router.post('/validate', async (req, res) => {
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'VALIDATE_ADDRESS_ERROR'
-    });
-  }
-});
-
-// @route   GET /api/addresses/recent
-// @desc    Get recently used addresses
-// @access  Private
-router.get('/recent', async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 5;
-
-    // Get addresses used in recent orders
-    const addresses = await dbQueries.query(
-      `SELECT DISTINCT ON (a.id) a.*, MAX(o.created_at) as last_used
-       FROM addresses a
-       LEFT JOIN orders o ON (
-         a.address_line1 = o.delivery_address_line1 AND
-         a.city = o.delivery_city AND
-         a.state = o.delivery_state AND
-         a.zip_code = o.delivery_zip_code
-       )
-       WHERE a.user_id = $1
-       GROUP BY a.id
-       ORDER BY last_used DESC NULLS LAST, a.created_at DESC
-       LIMIT $2`,
-      [userId, limit]
-    );
-
-    res.json({
-      addresses: addresses.rows
-    });
-  } catch (error) {
-    console.error('Get recent addresses error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_RECENT_ADDRESSES_ERROR'
     });
   }
 });

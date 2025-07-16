@@ -1,5 +1,34 @@
+/* eslint-disable linebreak-style */
 /* eslint-disable eqeqeq */
+/* eslint-disable linebreak-style */
+/* eslint-disable arrow-parens */
+/* eslint-disable linebreak-style */
+/* eslint-disable newline-per-chained-call */
+/* eslint-disable import/order */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-plusplus */
+/* eslint-disable linebreak-style */
+/* eslint-disable radix */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-await-in-loop */
+/* eslint-disable no-restricted-syntax */
+/* eslint-disable linebreak-style */
 /* eslint-disable no-unused-vars */
+/* eslint-disable linebreak-style */
+/* eslint-disable object-curly-newline */
+/* eslint-disable camelcase */
+/* eslint-disable no-trailing-spaces */
+/* eslint-disable import/newline-after-import */
+/* eslint-disable linebreak-style */
+/* eslint-disable quotes */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-return-await */
+/* eslint-disable linebreak-style */
+/* eslint-disable eol-last */
+/* eslint-disable operator-linebreak */
+/* eslint-disable comma-dangle */
+/* eslint-disable arrow-body-style */
+/* eslint-disable linebreak-style */
 // routes/categories.js - Category management routes
 const express = require('express');
 const router = express.Router();
@@ -90,6 +119,58 @@ router.get('/', async (req, res) => {
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'GET_CATEGORIES_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/categories/tree/all
+// @desc    Get category tree structure
+// @access  Public
+router.get('/tree/all', async (req, res) => {
+  try {
+    const result = await dbQueries.query(
+      `SELECT c.*, 
+        (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count
+       FROM categories c
+       WHERE c.is_active = true
+       ORDER BY c.parent_id NULLS FIRST, c.name ASC`
+    );
+
+    // Build tree structure
+    const categoryMap = new Map();
+    const rootCategories = [];
+
+    // First pass: create all category objects
+    result.rows.forEach(category => {
+      categoryMap.set(category.id, {
+        ...category,
+        product_count: parseInt(category.product_count) || 0,
+        children: []
+      });
+    });
+
+    // Second pass: build tree structure
+    result.rows.forEach(category => {
+      const categoryObj = categoryMap.get(category.id);
+      
+      if (category.parent_id) {
+        const parent = categoryMap.get(category.parent_id);
+        if (parent) {
+          parent.children.push(categoryObj);
+        }
+      } else {
+        rootCategories.push(categoryObj);
+      }
+    });
+
+    res.json({
+      categories: rootCategories
+    });
+  } catch (error) {
+    console.error('Get category tree error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_CATEGORY_TREE_ERROR'
     });
   }
 });
@@ -338,58 +419,6 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'DELETE_CATEGORY_ERROR'
-    });
-  }
-});
-
-// @route   GET /api/categories/tree/all
-// @desc    Get category tree structure
-// @access  Public
-router.get('/tree/all', async (req, res) => {
-  try {
-    const result = await dbQueries.query(
-      `SELECT c.*, 
-        (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count
-       FROM categories c
-       WHERE c.is_active = true
-       ORDER BY c.parent_id NULLS FIRST, c.name ASC`
-    );
-
-    // Build tree structure
-    const categoryMap = new Map();
-    const rootCategories = [];
-
-    // First pass: create all category objects
-    result.rows.forEach(category => {
-      categoryMap.set(category.id, {
-        ...category,
-        product_count: parseInt(category.product_count) || 0,
-        children: []
-      });
-    });
-
-    // Second pass: build tree structure
-    result.rows.forEach(category => {
-      const categoryObj = categoryMap.get(category.id);
-      
-      if (category.parent_id) {
-        const parent = categoryMap.get(category.parent_id);
-        if (parent) {
-          parent.children.push(categoryObj);
-        }
-      } else {
-        rootCategories.push(categoryObj);
-      }
-    });
-
-    res.json({
-      categories: rootCategories
-    });
-  } catch (error) {
-    console.error('Get category tree error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_CATEGORY_TREE_ERROR'
     });
   }
 });
