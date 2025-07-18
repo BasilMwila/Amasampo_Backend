@@ -65,10 +65,12 @@ router.post('/register', authRateLimit, validate(userSchemas.register), async (r
     const refreshToken = generateRefreshToken(user);
 
     // Create default settings for the user
-    await dbQueries.query(
-      'INSERT INTO user_settings (user_id) VALUES ($1)',
-      [user.id]
-    );
+    try {
+      await dbQueries.createUserSettings(user.id);
+    } catch (settingsError) {
+      console.warn('Failed to create user settings:', settingsError.message);
+      // Continue without failing the registration
+    }
 
     res.status(201).json({
       message: 'User registered successfully',
@@ -105,7 +107,7 @@ router.post('/login', authRateLimit, validate(userSchemas.login), async (req, re
   try {
     const { email, password } = req.validatedData;
 
-    // Find user by email
+    // Find user by email - using the more comprehensive query that includes all fields
     const user = await dbQueries.query(
       'SELECT * FROM users WHERE email = $1',
       [email]
@@ -138,10 +140,12 @@ router.post('/login', authRateLimit, validate(userSchemas.login), async (req, re
     }
 
     // Update last login
-    await dbQueries.query(
-      'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
-      [userData.id]
-    );
+    try {
+      await dbQueries.updateUserLastLogin(userData.id);
+    } catch (loginUpdateError) {
+      console.warn('Failed to update last login:', loginUpdateError.message);
+      // Continue without failing the login
+    }
 
     // Generate tokens
     const accessToken = generateToken(userData);
@@ -352,19 +356,14 @@ router.post('/change-password', authenticateToken, validate(userSchemas.changePa
     const userId = req.user.id;
 
     // Get user with password hash
-    const result = await dbQueries.query(
-      'SELECT password_hash FROM users WHERE id = $1',
-      [userId]
-    );
+    const user = await dbQueries.getUserPasswordHash(userId);
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(404).json({ 
         error: 'User not found',
         code: 'USER_NOT_FOUND'
       });
     }
-
-    const user = result.rows[0];
 
     // Verify current password
     const passwordMatch = await comparePassword(current_password, user.password_hash);
@@ -379,10 +378,7 @@ router.post('/change-password', authenticateToken, validate(userSchemas.changePa
     const newPasswordHash = await hashPassword(new_password);
 
     // Update password
-    await dbQueries.query(
-      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [newPasswordHash, userId]
-    );
+    await dbQueries.updateUserPassword(userId, newPasswordHash);
 
     res.json({
       message: 'Password changed successfully'
@@ -407,10 +403,7 @@ router.post('/verify-email', authenticateToken, async (req, res) => {
     // TODO: Implement email verification logic
     // For now, just mark as verified
     
-    await dbQueries.query(
-      'UPDATE users SET is_verified = true, email_verified_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [userId]
-    );
+    await dbQueries.verifyUserEmail(userId);
 
     res.json({
       message: 'Email verified successfully'
