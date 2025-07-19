@@ -1,13 +1,16 @@
 /* eslint-disable linebreak-style */
+/* eslint-disable no-trailing-spaces */
+/* eslint-disable linebreak-style */
 /* eslint-disable eol-last */
 /* eslint-disable operator-linebreak */
 /* eslint-disable comma-dangle */
 /* eslint-disable arrow-body-style */
 /* eslint-disable linebreak-style */
-// middleware/auth.js - Authentication middleware
+// src/middleware/auth.js - Updated authentication middleware with blacklist support
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { dbQueries } = require('../config/database');
+const { tokenBlacklist } = require('../utils/tokenBlacklist');
 
 // Generate JWT token
 const generateToken = (user) => {
@@ -44,7 +47,7 @@ const verifyRefreshToken = (token) => {
   return jwt.verify(token, process.env.JWT_REFRESH_SECRET);
 };
 
-// Authentication middleware
+// Authentication middleware with blacklist support
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -57,6 +60,14 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
+    // Check if token is blacklisted
+    if (tokenBlacklist.isBlacklisted(token)) {
+      return res.status(401).json({
+        error: 'Token has been revoked',
+        code: 'TOKEN_REVOKED'
+      });
+    }
+
     const decoded = verifyToken(token);
     const user = await dbQueries.findUserById(decoded.id);
 
@@ -74,6 +85,8 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
+    // Add token to request for potential blacklisting in logout
+    req.token = token;
     req.user = user;
     next();
   } catch (error) {
@@ -97,6 +110,44 @@ const authenticateToken = async (req, res, next) => {
       error: 'Token verification failed',
       code: 'TOKEN_VERIFICATION_FAILED'
     });
+  }
+};
+
+// Optional authentication middleware for logout (allows expired/invalid tokens)
+const optionalAuthForLogout = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    // No token provided - treat as anonymous logout
+    req.token = null;
+    req.user = null;
+    return next();
+  }
+
+  try {
+    // Try to decode token without verification for blacklisting purposes
+    const decoded = jwt.decode(token);
+    
+    if (decoded && decoded.id) {
+      try {
+        // Try to get user info if token is still valid
+        const user = await dbQueries.findUserById(decoded.id);
+        req.user = user;
+      } catch (userError) {
+        // User lookup failed, but we can still blacklist the token
+        req.user = null;
+      }
+    }
+
+    // Always add token for blacklisting, even if invalid/expired
+    req.token = token;
+    next();
+  } catch (error) {
+    // Token is malformed, but we can still add it to blacklist
+    req.token = token;
+    req.user = null;
+    next();
   }
 };
 
@@ -132,6 +183,12 @@ const optionalAuth = async (req, res, next) => {
   }
 
   try {
+    // Check if token is blacklisted
+    if (tokenBlacklist.isBlacklisted(token)) {
+      req.user = null;
+      return next();
+    }
+
     const decoded = verifyToken(token);
     const user = await dbQueries.findUserById(decoded.id);
 
@@ -243,6 +300,7 @@ module.exports = {
   verifyToken,
   verifyRefreshToken,
   authenticateToken,
+  optionalAuthForLogout,
   authorize,
   optionalAuth,
   checkResourceOwnership,

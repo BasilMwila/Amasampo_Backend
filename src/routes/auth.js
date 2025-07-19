@@ -15,7 +15,7 @@
 /* eslint-disable comma-dangle */
 /* eslint-disable arrow-body-style */
 /* eslint-disable linebreak-style */
-// routes/auth.js - Authentication routes
+// routes/auth.js - Updated authentication routes with proper logout
 const express = require('express');
 const router = express.Router();
 const { dbQueries } = require('../config/database');
@@ -25,9 +25,11 @@ const {
   generateRefreshToken, 
   verifyRefreshToken, 
   authenticateToken,
+  optionalAuthForLogout,
   authRateLimit 
 } = require('../middleware/auth');
 const { userSchemas, validate } = require('../validation/schemas');
+const { tokenBlacklist } = require('../utils/tokenBlacklist');
 
 // @route   POST /api/auth/register
 // @desc    Register a new user
@@ -195,6 +197,14 @@ router.post('/refresh', async (req, res) => {
       });
     }
 
+    // Check if refresh token is blacklisted
+    if (tokenBlacklist.isBlacklisted(refresh_token)) {
+      return res.status(401).json({ 
+        error: 'Refresh token has been revoked',
+        code: 'REFRESH_TOKEN_REVOKED'
+      });
+    }
+
     // Verify refresh token
     const decoded = verifyRefreshToken(refresh_token);
     
@@ -218,6 +228,9 @@ router.post('/refresh', async (req, res) => {
     // Generate new tokens
     const accessToken = generateToken(user);
     const newRefreshToken = generateRefreshToken(user);
+
+    // Optionally blacklist the old refresh token
+    await tokenBlacklist.addToken(refresh_token, user.id);
 
     res.json({
       message: 'Tokens refreshed successfully',
@@ -253,21 +266,75 @@ router.post('/refresh', async (req, res) => {
 });
 
 // @route   POST /api/auth/logout
-// @desc    Logout user (optional token blacklisting)
-// @access  Private
-router.post('/logout', authenticateToken, async (req, res) => {
+// @desc    Logout user with token blacklisting
+// @access  Semi-protected (allows expired/invalid tokens for cleanup)
+router.post('/logout', optionalAuthForLogout, async (req, res) => {
   try {
-    // Here you could implement token blacklisting if needed
-    // For now, we'll just return success since JWTs are stateless
-    
+    const { refresh_token } = req.body;
+    const userId = req.user ? req.user.id : undefined;
+
+    // Blacklist access token if provided
+    if (req.token) {
+      const success = await tokenBlacklist.addToken(req.token, userId);
+      if (success) {
+        console.log(`✅ Access token blacklisted for user ${userId || 'unknown'}`);
+      }
+    }
+
+    // Blacklist refresh token if provided
+    if (refresh_token) {
+      const success = await tokenBlacklist.addToken(refresh_token, userId);
+      if (success) {
+        console.log(`✅ Refresh token blacklisted for user ${userId || 'unknown'}`);
+      }
+    }
+
     res.json({
-      message: 'Logged out successfully'
+      message: 'Logged out successfully',
+      code: 'LOGOUT_SUCCESS'
     });
   } catch (error) {
     console.error('Logout error:', error);
+
+    // Even if blacklisting fails, return success to avoid client confusion
+    res.json({
+      message: 'Logged out successfully',
+      code: 'LOGOUT_SUCCESS',
+      warning: 'Token cleanup may have failed'
+    });
+  }
+});
+
+// @route   POST /api/auth/logout-all
+// @desc    Logout from all devices (blacklist all user tokens)
+// @access  Private
+router.post('/logout-all', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { refresh_token } = req.body;
+
+    // Blacklist current access token
+    if (req.token) {
+      await tokenBlacklist.addToken(req.token, userId);
+    }
+
+    // Blacklist provided refresh token
+    if (refresh_token) {
+      await tokenBlacklist.addToken(refresh_token, userId);
+    }
+
+    // Attempt to blacklist all user tokens (limited effectiveness without token tracking)
+    await tokenBlacklist.blacklistAllUserTokens(userId);
+
+    res.json({
+      message: 'Logged out from all devices successfully',
+      code: 'LOGOUT_ALL_SUCCESS'
+    });
+  } catch (error) {
+    console.error('Logout all error:', error);
     res.status(500).json({ 
       error: 'Internal server error during logout',
-      code: 'LOGOUT_ERROR'
+      code: 'LOGOUT_ALL_ERROR'
     });
   }
 });
@@ -380,8 +447,15 @@ router.post('/change-password', authenticateToken, validate(userSchemas.changePa
     // Update password
     await dbQueries.updateUserPassword(userId, newPasswordHash);
 
+    // Optionally blacklist current token to force re-login
+    if (req.token) {
+      await tokenBlacklist.addToken(req.token, userId);
+    }
+
     res.json({
-      message: 'Password changed successfully'
+      message: 'Password changed successfully',
+      code: 'PASSWORD_CHANGED',
+      note: 'Please log in again with your new password'
     });
   } catch (error) {
     console.error('Change password error:', error);
@@ -413,6 +487,33 @@ router.post('/verify-email', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'EMAIL_VERIFICATION_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/auth/blacklist-stats
+// @desc    Get token blacklist statistics (admin/debug)
+// @access  Private
+router.get('/blacklist-stats', authenticateToken, async (req, res) => {
+  try {
+    // Only allow admins or in development
+    if (process.env.NODE_ENV === 'production' && req.user.user_type !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        code: 'ACCESS_DENIED'
+      });
+    }
+
+    const stats = await tokenBlacklist.getStats();
+    
+    res.json({
+      blacklist_stats: stats
+    });
+  } catch (error) {
+    console.error('Get blacklist stats error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_BLACKLIST_STATS_ERROR'
     });
   }
 });
