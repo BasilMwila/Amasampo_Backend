@@ -1,3 +1,37 @@
+/* eslint-disable linebreak-style */
+/* eslint-disable no-multiple-empty-lines */
+
+/* eslint-disable linebreak-style */
+/* eslint-disable eqeqeq */
+/* eslint-disable linebreak-style */
+/* eslint-disable arrow-parens */
+/* eslint-disable linebreak-style */
+/* eslint-disable newline-per-chained-call */
+/* eslint-disable import/order */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-plusplus */
+/* eslint-disable linebreak-style */
+/* eslint-disable radix */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-await-in-loop */
+/* eslint-disable no-restricted-syntax */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-unused-vars */
+/* eslint-disable linebreak-style */
+/* eslint-disable object-curly-newline */
+/* eslint-disable camelcase */
+/* eslint-disable no-trailing-spaces */
+/* eslint-disable import/newline-after-import */
+/* eslint-disable linebreak-style */
+/* eslint-disable quotes */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-return-await */
+/* eslint-disable linebreak-style */
+/* eslint-disable eol-last */
+/* eslint-disable operator-linebreak */
+/* eslint-disable comma-dangle */
+/* eslint-disable arrow-body-style */
+/* eslint-disable linebreak-style */
 // scripts/migrate.js - Database migration script
 const { Pool } = require('pg');
 require('dotenv').config();

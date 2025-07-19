@@ -29,7 +29,7 @@
 /* eslint-disable comma-dangle */
 /* eslint-disable arrow-body-style */
 /* eslint-disable linebreak-style */
-// routes/categories.js - Category management routes
+// routes/categories.js - Fixed category management routes
 const express = require('express');
 const router = express.Router();
 const { dbQueries } = require('../config/database');
@@ -72,6 +72,47 @@ const validate = (schema) => {
   };
 };
 
+// Helper function to check if parent_id column exists
+const checkParentIdColumn = async () => {
+  try {
+    const result = await dbQueries.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'categories' 
+      AND column_name = 'parent_id'
+    `);
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error('Error checking parent_id column:', error);
+    return false;
+  }
+};
+
+// Helper function to ensure parent_id column exists
+const ensureParentIdColumn = async () => {
+  try {
+    const hasParentId = await checkParentIdColumn();
+    if (!hasParentId) {
+      console.log('Adding missing parent_id column to categories table...');
+      await dbQueries.query(`
+        ALTER TABLE categories 
+        ADD COLUMN parent_id INTEGER REFERENCES categories(id)
+      `);
+      
+      // Add index for better performance
+      await dbQueries.query(`
+        CREATE INDEX IF NOT EXISTS idx_categories_parent_id ON categories(parent_id)
+      `);
+      
+      console.log('✅ parent_id column added successfully');
+    }
+    return true;
+  } catch (error) {
+    console.error('❌ Error adding parent_id column:', error);
+    return false;
+  }
+};
+
 // @route   GET /api/categories
 // @desc    Get all categories
 // @access  Public
@@ -80,13 +121,31 @@ router.get('/', async (req, res) => {
     const includeInactive = req.query.include_inactive === 'true';
     const parentId = req.query.parent_id;
 
-    let queryText = `
-      SELECT c.*, 
-        (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count,
-        (SELECT COUNT(*) FROM categories child WHERE child.parent_id = c.id AND child.is_active = true) as subcategory_count
-      FROM categories c
-      WHERE 1=1
-    `;
+    // Ensure parent_id column exists
+    await ensureParentIdColumn();
+
+    // Check if parent_id column exists before using it in queries
+    const hasParentId = await checkParentIdColumn();
+
+    let queryText;
+    if (hasParentId) {
+      queryText = `
+        SELECT c.*, 
+          (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count,
+          (SELECT COUNT(*) FROM categories child WHERE child.parent_id = c.id AND child.is_active = true) as subcategory_count
+        FROM categories c
+        WHERE 1=1
+      `;
+    } else {
+      // Fallback query without parent_id functionality
+      queryText = `
+        SELECT c.*, 
+          (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count,
+          0 as subcategory_count
+        FROM categories c
+        WHERE 1=1
+      `;
+    }
     
     const params = [];
     let paramCount = 1;
@@ -95,12 +154,14 @@ router.get('/', async (req, res) => {
       queryText += ' AND c.is_active = true';
     }
 
-    if (parentId) {
-      queryText += ` AND c.parent_id = $${paramCount}`;
-      params.push(parentId);
-      paramCount++;
-    } else if (parentId !== 'all') {
-      queryText += ' AND c.parent_id IS NULL';
+    if (hasParentId) {
+      if (parentId) {
+        queryText += ` AND c.parent_id = $${paramCount}`;
+        params.push(parentId);
+        paramCount++;
+      } else if (parentId !== 'all') {
+        queryText += ' AND c.parent_id IS NULL';
+      }
     }
 
     queryText += ' ORDER BY c.name ASC';
@@ -128,6 +189,30 @@ router.get('/', async (req, res) => {
 // @access  Public
 router.get('/tree/all', async (req, res) => {
   try {
+    // Ensure parent_id column exists
+    await ensureParentIdColumn();
+    
+    const hasParentId = await checkParentIdColumn();
+
+    if (!hasParentId) {
+      // Fallback: return flat list if no parent_id support
+      const result = await dbQueries.query(
+        `SELECT c.*, 
+          (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count
+         FROM categories c
+         WHERE c.is_active = true
+         ORDER BY c.name ASC`
+      );
+
+      return res.json({
+        categories: result.rows.map(category => ({
+          ...category,
+          product_count: parseInt(category.product_count) || 0,
+          children: []
+        }))
+      });
+    }
+
     const result = await dbQueries.query(
       `SELECT c.*, 
         (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_active = true) as product_count
@@ -182,15 +267,31 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await dbQueries.query(
-      `SELECT c.*, 
-        p.name as parent_name,
-        (SELECT COUNT(*) FROM products WHERE category_id = c.id AND is_active = true) as product_count
-       FROM categories c
-       LEFT JOIN categories p ON c.parent_id = p.id
-       WHERE c.id = $1`,
-      [id]
-    );
+    // Ensure parent_id column exists
+    await ensureParentIdColumn();
+    const hasParentId = await checkParentIdColumn();
+
+    let queryText;
+    if (hasParentId) {
+      queryText = `
+        SELECT c.*, 
+          p.name as parent_name,
+          (SELECT COUNT(*) FROM products WHERE category_id = c.id AND is_active = true) as product_count
+        FROM categories c
+        LEFT JOIN categories p ON c.parent_id = p.id
+        WHERE c.id = $1
+      `;
+    } else {
+      queryText = `
+        SELECT c.*, 
+          NULL as parent_name,
+          (SELECT COUNT(*) FROM products WHERE category_id = c.id AND is_active = true) as product_count
+        FROM categories c
+        WHERE c.id = $1
+      `;
+    }
+
+    const result = await dbQueries.query(queryText, [id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ 
@@ -200,10 +301,13 @@ router.get('/:id', async (req, res) => {
     }
 
     // Get subcategories
-    const subcategories = await dbQueries.query(
-      'SELECT * FROM categories WHERE parent_id = $1 AND is_active = true ORDER BY name ASC',
-      [id]
-    );
+    let subcategories = { rows: [] };
+    if (hasParentId) {
+      subcategories = await dbQueries.query(
+        'SELECT * FROM categories WHERE parent_id = $1 AND is_active = true ORDER BY name ASC',
+        [id]
+      );
+    }
 
     res.json({
       category: {
@@ -228,11 +332,23 @@ router.post('/', authenticateToken, validate(categorySchemas.create), async (req
   try {
     const { name, description, icon, parent_id } = req.validatedData;
 
+    // Ensure parent_id column exists
+    await ensureParentIdColumn();
+    const hasParentId = await checkParentIdColumn();
+
     // Check if category name already exists
-    const existingCategory = await dbQueries.query(
-      'SELECT id FROM categories WHERE name = $1 AND parent_id = $2',
-      [name, parent_id || null]
-    );
+    let existingQuery;
+    let existingParams;
+    
+    if (hasParentId) {
+      existingQuery = 'SELECT id FROM categories WHERE name = $1 AND parent_id = $2';
+      existingParams = [name, parent_id || null];
+    } else {
+      existingQuery = 'SELECT id FROM categories WHERE name = $1';
+      existingParams = [name];
+    }
+
+    const existingCategory = await dbQueries.query(existingQuery, existingParams);
 
     if (existingCategory.rows.length > 0) {
       return res.status(409).json({ 
@@ -241,8 +357,8 @@ router.post('/', authenticateToken, validate(categorySchemas.create), async (req
       });
     }
 
-    // If parent_id is provided, verify parent exists
-    if (parent_id) {
+    // If parent_id is provided and supported, verify parent exists
+    if (parent_id && hasParentId) {
       const parentCategory = await dbQueries.query(
         'SELECT id FROM categories WHERE id = $1 AND is_active = true',
         [parent_id]
@@ -256,10 +372,18 @@ router.post('/', authenticateToken, validate(categorySchemas.create), async (req
       }
     }
 
-    const result = await dbQueries.query(
-      'INSERT INTO categories (name, description, icon, parent_id) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, description, icon, parent_id || null]
-    );
+    let insertQuery;
+    let insertParams;
+
+    if (hasParentId) {
+      insertQuery = 'INSERT INTO categories (name, description, icon, parent_id) VALUES ($1, $2, $3, $4) RETURNING *';
+      insertParams = [name, description, icon, parent_id || null];
+    } else {
+      insertQuery = 'INSERT INTO categories (name, description, icon) VALUES ($1, $2, $3) RETURNING *';
+      insertParams = [name, description, icon];
+    }
+
+    const result = await dbQueries.query(insertQuery, insertParams);
 
     res.status(201).json({
       message: 'Category created successfully',
@@ -282,6 +406,10 @@ router.put('/:id', authenticateToken, validate(categorySchemas.update), async (r
     const { id } = req.params;
     const updateData = req.validatedData;
 
+    // Ensure parent_id column exists
+    await ensureParentIdColumn();
+    const hasParentId = await checkParentIdColumn();
+
     // Check if category exists
     const existingCategory = await dbQueries.query(
       'SELECT * FROM categories WHERE id = $1',
@@ -295,8 +423,8 @@ router.put('/:id', authenticateToken, validate(categorySchemas.update), async (r
       });
     }
 
-    // If updating parent_id, verify parent exists and prevent circular reference
-    if (updateData.parent_id) {
+    // If updating parent_id and it's supported, verify parent exists and prevent circular reference
+    if (updateData.parent_id && hasParentId) {
       const parentCategory = await dbQueries.query(
         'SELECT id FROM categories WHERE id = $1 AND is_active = true',
         [updateData.parent_id]
@@ -316,6 +444,11 @@ router.put('/:id', authenticateToken, validate(categorySchemas.update), async (r
           code: 'CIRCULAR_REFERENCE'
         });
       }
+    }
+
+    // Remove parent_id from updateData if not supported
+    if (!hasParentId && updateData.parent_id !== undefined) {
+      delete updateData.parent_id;
     }
 
     // Build update query
@@ -366,6 +499,10 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Ensure parent_id column exists
+    await ensureParentIdColumn();
+    const hasParentId = await checkParentIdColumn();
+
     // Check if category exists
     const existingCategory = await dbQueries.query(
       'SELECT * FROM categories WHERE id = $1',
@@ -392,17 +529,19 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    // Check if category has subcategories
-    const subcategoryCount = await dbQueries.query(
-      'SELECT COUNT(*) as count FROM categories WHERE parent_id = $1 AND is_active = true',
-      [id]
-    );
+    // Check if category has subcategories (only if parent_id is supported)
+    if (hasParentId) {
+      const subcategoryCount = await dbQueries.query(
+        'SELECT COUNT(*) as count FROM categories WHERE parent_id = $1 AND is_active = true',
+        [id]
+      );
 
-    if (parseInt(subcategoryCount.rows[0].count) > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete category with active subcategories',
-        code: 'CATEGORY_HAS_SUBCATEGORIES'
-      });
+      if (parseInt(subcategoryCount.rows[0].count) > 0) {
+        return res.status(400).json({ 
+          error: 'Cannot delete category with active subcategories',
+          code: 'CATEGORY_HAS_SUBCATEGORIES'
+        });
+      }
     }
 
     // Soft delete category
