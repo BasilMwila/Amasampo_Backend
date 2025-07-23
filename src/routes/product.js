@@ -32,7 +32,7 @@
 // routes/product.js - Product routes
 const express = require('express');
 const router = express.Router();
-const { dbQueries } = require('../config/database');
+const { dbQueries, convertPriceFields } = require('../config/database');
 const { 
   authenticateToken, 
   authorize, 
@@ -40,6 +40,22 @@ const {
   optionalAuth 
 } = require('../middleware/auth');
 const { productSchemas, validate, validateQuery } = require('../validation/schemas');
+
+// Helper function to convert prices in query results
+const convertProductQueryPrices = (products) => {
+  if (!Array.isArray(products)) return products;
+  return products.map(product => {
+    const converted = { ...product };
+    // Convert price fields
+    if (converted.price !== null && converted.price !== undefined) {
+      converted.price = parseFloat(converted.price);
+    }
+    if (converted.original_price !== null && converted.original_price !== undefined) {
+      converted.original_price = parseFloat(converted.original_price);
+    }
+    return converted;
+  });
+};
 
 // @route   GET /api/products/featured
 // @desc    Get featured products
@@ -60,7 +76,7 @@ router.get('/featured', async (req, res) => {
     );
 
     res.json({
-      products: result.rows
+      products: convertProductQueryPrices(result.rows)
     });
   } catch (error) {
     console.error('Get featured products error:', error);
@@ -100,7 +116,7 @@ router.get('/seller/:sellerId', async (req, res) => {
     const total = parseInt(countResult.rows[0].total);
 
     res.json({
-      products: result.rows,
+      products: convertProductQueryPrices(result.rows),
       pagination: {
         page,
         limit,
@@ -148,7 +164,7 @@ router.get('/category/:categoryId', async (req, res) => {
     const total = parseInt(countResult.rows[0].total);
 
     res.json({
-      products: result.rows,
+      products: convertProductQueryPrices(result.rows),
       pagination: {
         page,
         limit,
@@ -310,7 +326,7 @@ router.get('/', validateQuery(productSchemas.search), async (req, res) => {
     const total = parseInt(countResult.rows[0].total);
 
     res.json({
-      products: result.rows,
+      products: convertProductQueryPrices(result.rows),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -527,7 +543,7 @@ router.post('/:id/duplicate', authenticateToken, authorize('seller'), checkProdu
 
     res.status(201).json({
       message: 'Product duplicated successfully',
-      product: duplicatedProduct.rows[0]
+      product: convertPriceFields(duplicatedProduct.rows[0])
     });
   } catch (error) {
     console.error('Duplicate product error:', error);
