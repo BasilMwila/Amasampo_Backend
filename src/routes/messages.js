@@ -36,37 +36,39 @@
 // routes/messages.js - Fixed with correct column names
 // Alternative routes/messages.js - Works with your current DB structure
 // routes/messages.js - Fixed ESLint issues for conversation-based structure
+// routes/messages.js - Fixed to use your actual table structure (user1_id/user2_id)
 const express = require('express');
-const crypto = require('crypto'); // Moved require to top
+const crypto = require('crypto');
 const router = express.Router();
 const { dbQueries } = require('../config/database');
 const { messageSchemas, validate } = require('../validation/schemas');
 
 // @route   GET /api/messages/conversations
-// @desc    Get user's conversations (adapted for conversation-based structure)
+// @desc    Get user's conversations (fixed for user1_id/user2_id structure)
 // @access  Private
 router.get('/conversations', async (req, res) => {
   try {
     const userId = req.user.id;
+    console.log('💬 Getting conversations for user:', userId);
     
-    // First, try to get conversations using the conversations table
+    // Fixed query to use user1_id/user2_id instead of participant1_id/participant2_id
     const conversationsQuery = `
       SELECT DISTINCT
         c.id as conversation_id,
         CASE 
-          WHEN c.participant1_id = $1 THEN c.participant2_id
-          ELSE c.participant1_id
+          WHEN c.user1_id = $1 THEN c.user2_id
+          ELSE c.user1_id
         END as other_user_id,
         CASE 
-          WHEN c.participant1_id = $1 THEN u2.name
+          WHEN c.user1_id = $1 THEN u2.name
           ELSE u1.name
         END as other_user_name,
         CASE 
-          WHEN c.participant1_id = $1 THEN u2.shop_name
+          WHEN c.user1_id = $1 THEN u2.shop_name
           ELSE u1.shop_name
         END as other_user_shop,
         CASE 
-          WHEN c.participant1_id = $1 THEN u2.avatar_url
+          WHEN c.user1_id = $1 THEN u2.avatar_url
           ELSE u1.avatar_url
         END as other_user_avatar,
         m.message_text as last_message,
@@ -75,8 +77,8 @@ router.get('/conversations', async (req, res) => {
         m.sender_id as last_sender_id,
         0 as unread_count
       FROM conversations c
-      LEFT JOIN users u1 ON c.participant1_id = u1.id
-      LEFT JOIN users u2 ON c.participant2_id = u2.id  
+      LEFT JOIN users u1 ON c.user1_id = u1.id
+      LEFT JOIN users u2 ON c.user2_id = u2.id  
       LEFT JOIN LATERAL (
         SELECT message_text, message_type, created_at, sender_id
         FROM messages 
@@ -84,7 +86,7 @@ router.get('/conversations', async (req, res) => {
         ORDER BY created_at DESC 
         LIMIT 1
       ) m ON true
-      WHERE c.participant1_id = $1 OR c.participant2_id = $1
+      WHERE c.user1_id = $1 OR c.user2_id = $1
       ORDER BY m.created_at DESC NULLS LAST
     `;
 
@@ -107,6 +109,7 @@ router.get('/conversations', async (req, res) => {
       unread_count: row.unread_count
     }));
 
+    console.log(`✅ Found ${formattedConversations.length} conversations`);
     res.json({
       conversations: formattedConversations
     });
@@ -120,7 +123,7 @@ router.get('/conversations', async (req, res) => {
 });
 
 // @route   GET /api/messages/conversation/:userId
-// @desc    Get messages in a conversation (adapted for conversation-based structure)
+// @desc    Get messages in a conversation (fixed for user1_id/user2_id structure)
 // @access  Private
 router.get('/conversation/:userId', async (req, res) => {
   try {
@@ -129,6 +132,8 @@ router.get('/conversation/:userId', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
+
+    console.log(`💬 Getting conversation between user ${userId} and user ${otherUserId}`);
 
     // Verify other user exists
     const otherUser = await dbQueries.findUserById(otherUserId);
@@ -139,25 +144,28 @@ router.get('/conversation/:userId', async (req, res) => {
       });
     }
 
-    // Find or create conversation
+    // Find or create conversation using user1_id/user2_id
     const conversation = await dbQueries.query(`
       SELECT id FROM conversations 
-      WHERE (participant1_id = $1 AND participant2_id = $2) 
-         OR (participant1_id = $2 AND participant2_id = $1)
+      WHERE (user1_id = $1 AND user2_id = $2) 
+         OR (user1_id = $2 AND user2_id = $1)
       LIMIT 1
     `, [userId, otherUserId]);
 
     let conversationId;
     if (conversation.rows.length === 0) {
+      console.log('📝 Creating new conversation...');
       // Create new conversation
       const newConversation = await dbQueries.query(`
-        INSERT INTO conversations (participant1_id, participant2_id, created_at, updated_at)
-        VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO conversations (uuid, user1_id, user2_id, created_at, updated_at)
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
-      `, [userId, otherUserId]);
+      `, [crypto.randomUUID(), userId, otherUserId]);
       conversationId = newConversation.rows[0].id;
+      console.log('✅ Created conversation:', conversationId);
     } else {
       conversationId = conversation.rows[0].id;
+      console.log('✅ Found existing conversation:', conversationId);
     }
 
     // Get messages for this conversation
@@ -179,6 +187,8 @@ router.get('/conversation/:userId', async (req, res) => {
     `, [conversationId]);
 
     const total = parseInt(countResult.rows[0].total);
+
+    console.log(`✅ Found ${messages.rows.length} messages in conversation ${conversationId}`);
 
     res.json({
       messages: messages.rows.reverse(), // Reverse to show oldest first
@@ -208,12 +218,14 @@ router.get('/conversation/:userId', async (req, res) => {
 });
 
 // @route   POST /api/messages/send
-// @desc    Send a message (adapted for conversation-based structure)
+// @desc    Send a message (fixed for user1_id/user2_id structure)
 // @access  Private
 router.post('/send', validate(messageSchemas.send), async (req, res) => {
   try {
     const { recipient_id, message_text, message_type = 'text' } = req.validatedData;
     const senderId = req.user.id;
+
+    console.log(`💬 Sending message from ${senderId} to ${recipient_id}`);
 
     // Verify recipient exists
     const recipient = await dbQueries.findUserById(recipient_id);
@@ -232,25 +244,28 @@ router.post('/send', validate(messageSchemas.send), async (req, res) => {
       });
     }
 
-    // Find or create conversation
+    // Find or create conversation using user1_id/user2_id
     const conversation = await dbQueries.query(`
       SELECT id FROM conversations 
-      WHERE (participant1_id = $1 AND participant2_id = $2) 
-         OR (participant1_id = $2 AND participant2_id = $1)
+      WHERE (user1_id = $1 AND user2_id = $2) 
+         OR (user1_id = $2 AND user2_id = $1)
       LIMIT 1
     `, [senderId, recipient_id]);
 
     let conversationId;
     if (conversation.rows.length === 0) {
+      console.log('📝 Creating new conversation for message...');
       // Create new conversation
       const newConversation = await dbQueries.query(`
-        INSERT INTO conversations (participant1_id, participant2_id, created_at, updated_at)
-        VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO conversations (uuid, user1_id, user2_id, created_at, updated_at)
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
-      `, [senderId, recipient_id]);
+      `, [crypto.randomUUID(), senderId, recipient_id]);
       conversationId = newConversation.rows[0].id;
+      console.log('✅ Created conversation:', conversationId);
     } else {
       conversationId = conversation.rows[0].id;
+      console.log('✅ Using existing conversation:', conversationId);
     }
 
     // Generate UUID for the message
@@ -258,17 +273,19 @@ router.post('/send', validate(messageSchemas.send), async (req, res) => {
 
     // Save message
     const message = await dbQueries.query(`
-      INSERT INTO messages (uuid, conversation_id, sender_id, message_text, message_type, status, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, 'sent', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO messages (uuid, conversation_id, sender_id, receiver_id, message_text, message_type, status, is_read, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, 'sent', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING *
-    `, [messageUuid, conversationId, senderId, message_text, message_type]);
+    `, [messageUuid, conversationId, senderId, recipient_id, message_text, message_type]);
 
-    // Update conversation timestamp
+    // Update conversation timestamp and last message
     await dbQueries.query(`
       UPDATE conversations 
-      SET updated_at = CURRENT_TIMESTAMP 
+      SET updated_at = CURRENT_TIMESTAMP, 
+          last_message_id = $2,
+          last_message_at = CURRENT_TIMESTAMP
       WHERE id = $1
-    `, [conversationId]);
+    `, [conversationId, message.rows[0].id]);
 
     // Get complete message data
     const messageData = await dbQueries.query(`
@@ -278,6 +295,7 @@ router.post('/send', validate(messageSchemas.send), async (req, res) => {
       WHERE m.id = $1
     `, [message.rows[0].id]);
 
+    console.log('✅ Message sent successfully');
     res.status(201).json({
       message: 'Message sent successfully',
       data: messageData.rows[0]
@@ -298,15 +316,12 @@ router.get('/unread-count', async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // For conversation-based system, we need to count unread messages differently
-    // This is a simplified version - you might need to adjust based on your read status tracking
+    // Count unread messages where user is the receiver
     const result = await dbQueries.query(`
       SELECT COUNT(*) as count 
       FROM messages m
-      JOIN conversations c ON m.conversation_id = c.id
-      WHERE (c.participant1_id = $1 OR c.participant2_id = $1) 
-        AND m.sender_id != $1
-        AND (m.status != 'read' OR m.status IS NULL)
+      WHERE m.receiver_id = $1 
+        AND (m.is_read = false OR m.is_read IS NULL)
     `, [userId]);
 
     res.json({
@@ -330,7 +345,7 @@ router.put('/:id/read', async (req, res) => {
 
     // Update message status to read
     const result = await dbQueries.query(
-      'UPDATE messages SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      'UPDATE messages SET is_read = true, status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       ['read', id]
     );
 
@@ -361,11 +376,11 @@ router.put('/conversation/:userId/read', async (req, res) => {
     const { userId: otherUserId } = req.params;
     const userId = req.user.id;
 
-    // Find conversation
+    // Find conversation using user1_id/user2_id
     const conversation = await dbQueries.query(`
       SELECT id FROM conversations 
-      WHERE (participant1_id = $1 AND participant2_id = $2) 
-         OR (participant1_id = $2 AND participant2_id = $1)
+      WHERE (user1_id = $1 AND user2_id = $2) 
+         OR (user1_id = $2 AND user2_id = $1)
       LIMIT 1
     `, [userId, otherUserId]);
 
@@ -381,8 +396,8 @@ router.put('/conversation/:userId/read', async (req, res) => {
     // Mark all messages in conversation as read (except user's own messages)
     const result = await dbQueries.query(`
       UPDATE messages 
-      SET status = 'read', updated_at = CURRENT_TIMESTAMP 
-      WHERE conversation_id = $1 AND sender_id != $2 AND (status != 'read' OR status IS NULL)
+      SET is_read = true, status = 'read', updated_at = CURRENT_TIMESTAMP 
+      WHERE conversation_id = $1 AND receiver_id = $2 AND (is_read = false OR is_read IS NULL)
     `, [conversationId, userId]);
 
     res.json({
@@ -432,7 +447,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // @route   POST /api/messages/product/:productId
-// @desc    Send message about a product
+// @desc    Send message about a product  
 // @access  Private
 router.post('/product/:productId', async (req, res) => {
   try {
@@ -457,11 +472,11 @@ router.post('/product/:productId', async (req, res) => {
       });
     }
 
-    // Find or create conversation with seller
+    // Find or create conversation with seller using user1_id/user2_id
     const conversation = await dbQueries.query(`
       SELECT id FROM conversations 
-      WHERE (participant1_id = $1 AND participant2_id = $2) 
-         OR (participant1_id = $2 AND participant2_id = $1)
+      WHERE (user1_id = $1 AND user2_id = $2) 
+         OR (user1_id = $2 AND user2_id = $1)
       LIMIT 1
     `, [userId, product.seller_id]);
 
@@ -469,10 +484,10 @@ router.post('/product/:productId', async (req, res) => {
     if (conversation.rows.length === 0) {
       // Create new conversation
       const newConversation = await dbQueries.query(`
-        INSERT INTO conversations (participant1_id, participant2_id, created_at, updated_at)
-        VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO conversations (uuid, user1_id, user2_id, created_at, updated_at)
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
-      `, [userId, product.seller_id]);
+      `, [crypto.randomUUID(), userId, product.seller_id]);
       conversationId = newConversation.rows[0].id;
     } else {
       conversationId = conversation.rows[0].id;
@@ -483,10 +498,19 @@ router.post('/product/:productId', async (req, res) => {
 
     // Send message to product seller
     const message = await dbQueries.query(`
-      INSERT INTO messages (uuid, conversation_id, sender_id, message_text, message_type, status, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, 'product', 'sent', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO messages (uuid, conversation_id, sender_id, receiver_id, message_text, message_type, product_id, status, is_read, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, 'product', $6, 'sent', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING *
-    `, [messageUuid, conversationId, userId, message_text]);
+    `, [messageUuid, conversationId, userId, product.seller_id, message_text, productId]);
+
+    // Update conversation
+    await dbQueries.query(`
+      UPDATE conversations 
+      SET updated_at = CURRENT_TIMESTAMP, 
+          last_message_id = $2,
+          last_message_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+    `, [conversationId, message.rows[0].id]);
 
     res.status(201).json({
       message: 'Message sent to seller successfully',
