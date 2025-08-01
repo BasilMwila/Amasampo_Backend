@@ -34,54 +34,588 @@
 /* eslint-disable arrow-body-style */
 /* eslint-disable linebreak-style */
 // routes/payment.js - Payment management routes
+// src/routes/payment.js - Complete Lenco Payment Routes Integration
 const express = require('express');
 const router = express.Router();
 const { dbQueries, transaction } = require('../config/database');
-const { paymentSchemas, validate } = require('../validation/schemas');
+const lencoPaymentService = require('../services/lencoPaymentService');
 
-// @route   GET /api/payment/methods/default
-// @desc    Get default payment method
+// @route   GET /api/payment/providers
+// @desc    Get supported mobile money operators
 // @access  Private
-router.get('/methods/default', async (req, res) => {
+router.get('/providers', async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    const paymentMethod = await dbQueries.query(
-      'SELECT * FROM payment_methods WHERE user_id = $1 AND is_default = true',
-      [userId]
-    );
-
-    if (paymentMethod.rows.length === 0) {
-      // Return first payment method if no default is set
-      const firstPaymentMethod = await dbQueries.query(
-        'SELECT * FROM payment_methods WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
-        [userId]
-      );
-
-      if (firstPaymentMethod.rows.length === 0) {
-        return res.status(404).json({ 
-          error: 'No payment methods found',
-          code: 'NO_PAYMENT_METHODS_FOUND'
-        });
-      }
-
-      return res.json({
-        payment_method: firstPaymentMethod.rows[0]
-      });
-    }
-
+    console.log('📱 Fetching supported mobile money operators...');
+    
+    const operators = lencoPaymentService.getSupportedOperators();
+    
     res.json({
-      payment_method: paymentMethod.rows[0]
+      providers: operators
     });
   } catch (error) {
-    console.error('Get default payment method error:', error);
+    console.error('Get providers error:', error);
     res.status(500).json({ 
       error: 'Internal server error',
-      code: 'GET_DEFAULT_PAYMENT_METHOD_ERROR'
+      code: 'GET_PROVIDERS_ERROR'
     });
   }
 });
 
+// @route   POST /api/payment/initialize/card
+// @desc    Initialize card payment (returns widget config)
+// @access  Private
+router.post('/initialize/card', async (req, res) => {
+  try {
+    const { order_id, success_url, cancel_url } = req.body;
+    const userId = req.user.id;
+
+    if (!order_id) {
+      return res.status(400).json({ 
+        error: 'Order ID is required',
+        code: 'REQUIRED_FIELDS_MISSING'
+      });
+    }
+
+    // Get order details
+    const order = await dbQueries.query(
+      `SELECT o.*, u.name, u.email, u.phone 
+       FROM orders o
+       JOIN users u ON o.buyer_id = u.id
+       WHERE o.id = $1 AND o.buyer_id = $2`,
+      [order_id, userId]
+    );
+
+    if (order.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    const orderData = order.rows[0];
+    const paymentReference = `ORDER_${order_id}_${Date.now()}`;
+
+    // Generate card payment configuration for widget
+    const configResult = lencoPaymentService.generateCardPaymentConfig({
+      amount: parseFloat(orderData.total),
+      currency: 'NGN',
+      email: orderData.email,
+      phone: orderData.phone,
+      firstName: orderData.name.split(' ')[0],
+      lastName: orderData.name.split(' ').slice(1).join(' '),
+      reference: paymentReference,
+      description: `Payment for Order #${orderData.order_number}`,
+      onSuccessUrl: success_url || `${process.env.CLIENT_URL}/payment-success`,
+      onCloseUrl: cancel_url || `${process.env.CLIENT_URL}/payment-cancelled`
+    });
+
+    if (configResult.success) {
+      // Store payment record
+      await dbQueries.query(
+        `INSERT INTO payments (
+          user_id, order_id, payment_reference, gateway, payment_method, 
+          amount, currency, status, gateway_response
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          userId, order_id, paymentReference, 'lenco', 'card',
+          orderData.total, 'NGN', 'pending', JSON.stringify(configResult.config)
+        ]
+      );
+
+      // Update order with payment reference
+      await dbQueries.query(
+        'UPDATE orders SET payment_reference = $1, payment_status = $2 WHERE id = $3',
+        [paymentReference, 'pending', order_id]
+      );
+
+      res.json({
+        message: 'Card payment configuration generated successfully',
+        data: {
+          widget_config: configResult.config,
+          widget_script: configResult.widgetScript,
+          payment_reference: paymentReference,
+          verification_url: `${process.env.API_URL}/api/payment/verify/${paymentReference}`
+        }
+      });
+    } else {
+      res.status(400).json({ 
+        error: configResult.error,
+        code: configResult.code
+      });
+    }
+  } catch (error) {
+    console.error('Initialize card payment error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'INITIALIZE_CARD_PAYMENT_ERROR'
+    });
+  }
+});
+
+// @route   POST /api/payment/initialize/mobile-money
+// @desc    Initialize mobile money payment
+// @access  Private
+router.post('/initialize/mobile-money', async (req, res) => {
+  try {
+    const { order_id, operator, phone, country = 'ng' } = req.body;
+    const userId = req.user.id;
+
+    if (!order_id || !operator || !phone) {
+      return res.status(400).json({ 
+        error: 'Order ID, operator, and phone number are required',
+        code: 'REQUIRED_FIELDS_MISSING'
+      });
+    }
+
+    // Validate phone number format (basic validation)
+    if (!/^[0-9+\-\s()]{10,15}$/.test(phone)) {
+      return res.status(400).json({ 
+        error: 'Invalid phone number format',
+        code: 'INVALID_PHONE_NUMBER'
+      });
+    }
+
+    // Get order details
+    const order = await dbQueries.query(
+      `SELECT o.*, u.name, u.email 
+       FROM orders o
+       JOIN users u ON o.buyer_id = u.id
+       WHERE o.id = $1 AND o.buyer_id = $2`,
+      [order_id, userId]
+    );
+
+    if (order.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    const orderData = order.rows[0];
+    const paymentReference = `ORDER_${order_id}_${Date.now()}`;
+
+    // Initialize mobile money payment with Lenco
+    const paymentResult = await lencoPaymentService.initializeMobileMoneyPayment({
+      amount: parseFloat(orderData.total),
+      currency: 'NGN',
+      phone: phone,
+      reference: paymentReference,
+      description: `Payment for Order #${orderData.order_number}`,
+      country: country,
+      operator: operator,
+      bearer: 'merchant'
+    });
+
+    if (paymentResult.success) {
+      // Store payment record
+      await dbQueries.query(
+        `INSERT INTO payments (
+          user_id, order_id, payment_reference, gateway, payment_method, 
+          amount, currency, status, gateway_response, provider, lenco_reference
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          userId, order_id, paymentReference, 'lenco', 'mobile_money',
+          orderData.total, 'NGN', paymentResult.data.status, 
+          JSON.stringify(paymentResult.data), operator, paymentResult.data.lencoReference
+        ]
+      );
+
+      // Update order with payment reference
+      await dbQueries.query(
+        'UPDATE orders SET payment_reference = $1, payment_status = $2 WHERE id = $3',
+        [paymentReference, 'pending', order_id]
+      );
+
+      res.json({
+        message: 'Mobile money payment initialized successfully',
+        data: {
+          reference: paymentResult.data.reference,
+          lenco_reference: paymentResult.data.lencoReference,
+          status: paymentResult.data.status,
+          instructions: paymentResult.data.instructions,
+          operator: paymentResult.data.operator,
+          amount: paymentResult.data.amount,
+          currency: paymentResult.data.currency,
+          collection_id: paymentResult.data.id,
+          needs_otp: paymentResult.data.status === 'otp-required',
+          needs_authorization: paymentResult.data.status === 'pay-offline'
+        }
+      });
+    } else {
+      res.status(400).json({ 
+        error: paymentResult.error,
+        code: paymentResult.code
+      });
+    }
+  } catch (error) {
+    console.error('Initialize mobile money payment error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'INITIALIZE_MOBILE_MONEY_PAYMENT_ERROR'
+    });
+  }
+});
+
+// @route   POST /api/payment/mobile-money/submit-otp
+// @desc    Submit OTP for mobile money payment
+// @access  Private
+router.post('/mobile-money/submit-otp', async (req, res) => {
+  try {
+    const { collection_id, otp } = req.body;
+    const userId = req.user.id;
+
+    if (!collection_id || !otp) {
+      return res.status(400).json({ 
+        error: 'Collection ID and OTP are required',
+        code: 'REQUIRED_FIELDS_MISSING'
+      });
+    }
+
+    // Verify this collection belongs to the user
+    const payment = await dbQueries.query(
+      `SELECT p.*, o.buyer_id 
+       FROM payments p
+       JOIN orders o ON p.order_id = o.id
+       WHERE JSON_EXTRACT(p.gateway_response, '$.id') = $1 AND o.buyer_id = $2`,
+      [collection_id, userId]
+    );
+
+    if (payment.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Collection not found or unauthorized',
+        code: 'COLLECTION_NOT_FOUND'
+      });
+    }
+
+    // Submit OTP to Lenco
+    const otpResult = await lencoPaymentService.submitMobileMoneyOTP(collection_id, otp);
+
+    if (otpResult.success) {
+      // Update payment status
+      await dbQueries.query(
+        `UPDATE payments SET 
+          status = $1, 
+          gateway_response = JSON_SET(gateway_response, '$.status', $1),
+          updated_at = CURRENT_TIMESTAMP
+         WHERE JSON_EXTRACT(gateway_response, '$.id') = $2`,
+        [otpResult.data.status, collection_id]
+      );
+
+      res.json({
+        message: 'OTP submitted successfully',
+        data: {
+          status: otpResult.data.status,
+          reference: otpResult.data.reference,
+          message: otpResult.data.message
+        }
+      });
+    } else {
+      res.status(400).json({ 
+        error: otpResult.error,
+        code: otpResult.code
+      });
+    }
+  } catch (error) {
+    console.error('Submit mobile money OTP error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'SUBMIT_MOBILE_MONEY_OTP_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/payment/verify/:reference
+// @desc    Verify payment status
+// @access  Private
+router.get('/verify/:reference', async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const userId = req.user.id;
+
+    console.log('🔍 Verifying payment:', reference);
+
+    // Get local payment record
+    const localPayment = await dbQueries.query(
+      `SELECT p.*, o.buyer_id 
+       FROM payments p
+       JOIN orders o ON p.order_id = o.id
+       WHERE p.payment_reference = $1 AND o.buyer_id = $2`,
+      [reference, userId]
+    );
+
+    if (localPayment.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Payment not found',
+        code: 'PAYMENT_NOT_FOUND'
+      });
+    }
+
+    // Verify with Lenco
+    const verificationResult = await lencoPaymentService.verifyPayment(reference);
+
+    if (verificationResult.success) {
+      const paymentData = verificationResult.data;
+      
+      // Update local payment record
+      await transaction(async (client) => {
+        // Update payment status
+        await client.query(
+          `UPDATE payments SET 
+            status = $1, 
+            paid_at = $2, 
+            gateway_response = $3,
+            fees = $4,
+            lenco_reference = $5,
+            updated_at = CURRENT_TIMESTAMP
+           WHERE payment_reference = $6`,
+          [
+            paymentData.status,
+            paymentData.completedAt,
+            JSON.stringify(paymentData),
+            paymentData.fee,
+            paymentData.lencoReference,
+            reference
+          ]
+        );
+
+        // Update order status if payment successful
+        if (paymentData.status === 'successful') {
+          await client.query(
+            'UPDATE orders SET status = $1, payment_status = $2 WHERE payment_reference = $3',
+            ['confirmed', 'paid', reference]
+          );
+
+          // Add to order status history
+          const order = await client.query(
+            'SELECT id FROM orders WHERE payment_reference = $1',
+            [reference]
+          );
+
+          if (order.rows.length > 0) {
+            await client.query(
+              'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+              [order.rows[0].id, 'confirmed', 'Payment confirmed via Lenco']
+            );
+          }
+        }
+      });
+
+      res.json({
+        message: 'Payment verification completed',
+        data: {
+          reference: paymentData.reference,
+          lenco_reference: paymentData.lencoReference,
+          status: paymentData.status,
+          amount: paymentData.amount,
+          currency: paymentData.currency,
+          type: paymentData.type,
+          completed_at: paymentData.completedAt,
+          settlement_status: paymentData.settlementStatus,
+          mobile_money_details: paymentData.mobileMoneyDetails,
+          card_details: paymentData.cardDetails
+        }
+      });
+    } else {
+      res.status(400).json({ 
+        error: verificationResult.error,
+        code: verificationResult.code
+      });
+    }
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'VERIFY_PAYMENT_ERROR'
+    });
+  }
+});
+
+// @route   POST /api/payment/webhook/lenco
+// @desc    Handle Lenco webhook notifications
+// @access  Public (no auth required for webhooks)
+router.post('/webhook/lenco', async (req, res) => {
+  try {
+    const payload = req.body;
+
+    console.log('📥 Received Lenco webhook:', payload.event || 'unknown event');
+
+    // Log webhook for debugging
+    await dbQueries.query(
+      `INSERT INTO payment_webhook_logs (
+        payment_reference, webhook_event, payload, status
+      ) VALUES ($1, $2, $3, $4)`,
+      [
+        payload.data?.reference || 'unknown',
+        payload.event || 'unknown',
+        JSON.stringify(payload),
+        'received'
+      ]
+    );
+
+    // Process webhook
+    const webhookData = lencoPaymentService.processWebhook(payload);
+    
+    if (!webhookData.success) {
+      await dbQueries.query(
+        `UPDATE payment_webhook_logs 
+         SET status = $1, error_message = $2 
+         WHERE payload->>'$.data.reference' = $3 
+         ORDER BY created_at DESC LIMIT 1`,
+        ['failed', webhookData.error, payload.data?.reference || 'unknown']
+      );
+
+      return res.status(400).json({ error: webhookData.error });
+    }
+
+    // Update payment status based on webhook
+    await transaction(async (client) => {
+      // Update payment record
+      const updateResult = await client.query(
+        `UPDATE payments SET 
+          status = $1, 
+          paid_at = $2, 
+          lenco_reference = $3,
+          gateway_response = $4,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE payment_reference = $5`,
+        [
+          webhookData.status,
+          webhookData.completed_at,
+          webhookData.lenco_reference,
+          JSON.stringify(webhookData),
+          webhookData.payment_reference
+        ]
+      );
+
+      // Update order if payment successful
+      if (webhookData.status === 'successful' && updateResult.rowCount > 0) {
+        await client.query(
+          'UPDATE orders SET status = $1, payment_status = $2 WHERE payment_reference = $3',
+          ['confirmed', 'paid', webhookData.payment_reference]
+        );
+
+        // Add order status history
+        const order = await client.query(
+          'SELECT id FROM orders WHERE payment_reference = $1',
+          [webhookData.payment_reference]
+        );
+
+        if (order.rows.length > 0) {
+          await client.query(
+            'INSERT INTO order_status_history (order_id, status, note) VALUES ($1, $2, $3)',
+            [order.rows[0].id, 'confirmed', `Payment confirmed via ${webhookData.type} (Lenco webhook)`]
+          );
+        }
+
+        console.log('✅ Payment confirmed via webhook:', webhookData.payment_reference);
+      }
+
+      // Mark webhook as processed
+      await client.query(
+        `UPDATE payment_webhook_logs 
+         SET status = 'processed' 
+         WHERE payload->>'$.data.reference' = $1 
+         ORDER BY created_at DESC LIMIT 1`,
+        [webhookData.payment_reference]
+      );
+    });
+
+    res.json({ message: 'Webhook processed successfully' });
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+    
+    // Log error
+    await dbQueries.query(
+      `UPDATE payment_webhook_logs 
+       SET status = $1, error_message = $2 
+       WHERE payload->>'$.data.reference' = $3 
+       ORDER BY created_at DESC LIMIT 1`,
+      ['failed', error.message, req.body.data?.reference || 'unknown']
+    );
+
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// @route   GET /api/payment/status/:order_id
+// @desc    Get payment status for an order
+// @access  Private
+router.get('/status/:order_id', async (req, res) => {
+  try {
+    const { order_id } = req.params;
+    const userId = req.user.id;
+
+    const payment = await dbQueries.query(
+      `SELECT p.*, o.order_number, o.total as order_total
+       FROM payments p
+       JOIN orders o ON p.order_id = o.id
+       WHERE p.order_id = $1 AND o.buyer_id = $2
+       ORDER BY p.created_at DESC
+       LIMIT 1`,
+      [order_id, userId]
+    );
+
+    if (payment.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Payment not found',
+        code: 'PAYMENT_NOT_FOUND'
+      });
+    }
+
+    const paymentData = payment.rows[0];
+
+    res.json({
+      payment: {
+        id: paymentData.id,
+        reference: paymentData.payment_reference,
+        lenco_reference: paymentData.lenco_reference,
+        status: paymentData.status,
+        amount: parseFloat(paymentData.amount),
+        currency: paymentData.currency,
+        payment_method: paymentData.payment_method,
+        provider: paymentData.provider,
+        gateway: paymentData.gateway,
+        fees: parseFloat(paymentData.fees || 0),
+        paid_at: paymentData.paid_at,
+        created_at: paymentData.created_at,
+        order_number: paymentData.order_number,
+        gateway_response: paymentData.gateway_response
+      }
+    });
+  } catch (error) {
+    console.error('Get payment status error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_PAYMENT_STATUS_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/payment/test-connection
+// @desc    Test Lenco API connection
+// @access  Private (for debugging)
+router.get('/test-connection', async (req, res) => {
+  try {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ error: 'Not available in production' });
+    }
+
+    const result = await lencoPaymentService.testConnection();
+    
+    res.json({
+      message: 'Connection test completed',
+      data: result
+    });
+  } catch (error) {
+    console.error('Test connection error:', error);
+    res.status(500).json({ 
+      error: 'Connection test failed',
+      details: error.message
+    });
+  }
+});
+
+// Keep existing payment methods routes from original implementation
 // @route   GET /api/payment/methods
 // @desc    Get user's payment methods
 // @access  Private
@@ -106,45 +640,13 @@ router.get('/methods', async (req, res) => {
   }
 });
 
-// @route   GET /api/payment/methods/:id
-// @desc    Get single payment method
-// @access  Private
-router.get('/methods/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    const paymentMethod = await dbQueries.query(
-      'SELECT * FROM payment_methods WHERE id = $1 AND user_id = $2',
-      [id, userId]
-    );
-
-    if (paymentMethod.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Payment method not found',
-        code: 'PAYMENT_METHOD_NOT_FOUND'
-      });
-    }
-
-    res.json({
-      payment_method: paymentMethod.rows[0]
-    });
-  } catch (error) {
-    console.error('Get payment method error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_PAYMENT_METHOD_ERROR'
-    });
-  }
-});
-
 // @route   POST /api/payment/methods
 // @desc    Add new payment method
 // @access  Private
-router.post('/methods', validate(paymentSchemas.create), async (req, res) => {
+router.post('/methods', async (req, res) => {
   try {
     const userId = req.user.id;
-    const paymentData = { ...req.validatedData, user_id: userId };
+    const paymentData = { ...req.body, user_id: userId };
 
     const result = await transaction(async (client) => {
       // If this is set as default, unset other defaults
@@ -184,423 +686,5 @@ router.post('/methods', validate(paymentSchemas.create), async (req, res) => {
     });
   }
 });
-
-// @route   PUT /api/payment/methods/:id
-// @desc    Update payment method
-// @access  Private
-router.put('/methods/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-    const { is_default } = req.body;
-
-    // Check if payment method exists and belongs to user
-    const existingPaymentMethod = await dbQueries.query(
-      'SELECT * FROM payment_methods WHERE id = $1 AND user_id = $2',
-      [id, userId]
-    );
-
-    if (existingPaymentMethod.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Payment method not found',
-        code: 'PAYMENT_METHOD_NOT_FOUND'
-      });
-    }
-
-    const result = await transaction(async (client) => {
-      // If this is set as default, unset other defaults
-      if (is_default) {
-        await client.query(
-          'UPDATE payment_methods SET is_default = false WHERE user_id = $1 AND id != $2',
-          [userId, id]
-        );
-      }
-
-      // Update payment method
-      const updatedPaymentMethod = await client.query(
-        'UPDATE payment_methods SET is_default = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3 RETURNING *',
-        [is_default, id, userId]
-      );
-
-      return updatedPaymentMethod.rows[0];
-    });
-
-    res.json({
-      message: 'Payment method updated successfully',
-      payment_method: result
-    });
-  } catch (error) {
-    console.error('Update payment method error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'UPDATE_PAYMENT_METHOD_ERROR'
-    });
-  }
-});
-
-// @route   DELETE /api/payment/methods/:id
-// @desc    Delete payment method
-// @access  Private
-router.delete('/methods/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    // Check if payment method exists and belongs to user
-    const existingPaymentMethod = await dbQueries.query(
-      'SELECT * FROM payment_methods WHERE id = $1 AND user_id = $2',
-      [id, userId]
-    );
-
-    if (existingPaymentMethod.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Payment method not found',
-        code: 'PAYMENT_METHOD_NOT_FOUND'
-      });
-    }
-
-    // Cannot delete if it's the only payment method
-    const paymentMethodCount = await dbQueries.query(
-      'SELECT COUNT(*) as count FROM payment_methods WHERE user_id = $1',
-      [userId]
-    );
-
-    if (parseInt(paymentMethodCount.rows[0].count) === 1) {
-      return res.status(400).json({ 
-        error: 'Cannot delete the only payment method',
-        code: 'CANNOT_DELETE_ONLY_PAYMENT_METHOD'
-      });
-    }
-
-    await transaction(async (client) => {
-      // Delete payment method
-      await client.query(
-        'DELETE FROM payment_methods WHERE id = $1 AND user_id = $2',
-        [id, userId]
-      );
-
-      // If deleted payment method was default, set another as default
-      if (existingPaymentMethod.rows[0].is_default) {
-        await client.query(
-          'UPDATE payment_methods SET is_default = true WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
-          [userId]
-        );
-      }
-    });
-
-    res.json({
-      message: 'Payment method deleted successfully'
-    });
-  } catch (error) {
-    console.error('Delete payment method error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'DELETE_PAYMENT_METHOD_ERROR'
-    });
-  }
-});
-
-// @route   POST /api/payment/methods/:id/set-default
-// @desc    Set payment method as default
-// @access  Private
-router.post('/methods/:id/set-default', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    // Check if payment method exists and belongs to user
-    const existingPaymentMethod = await dbQueries.query(
-      'SELECT * FROM payment_methods WHERE id = $1 AND user_id = $2',
-      [id, userId]
-    );
-
-    if (existingPaymentMethod.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Payment method not found',
-        code: 'PAYMENT_METHOD_NOT_FOUND'
-      });
-    }
-
-    await transaction(async (client) => {
-      // Unset all defaults
-      await client.query(
-        'UPDATE payment_methods SET is_default = false WHERE user_id = $1',
-        [userId]
-      );
-
-      // Set this payment method as default
-      await client.query(
-        'UPDATE payment_methods SET is_default = true WHERE id = $1 AND user_id = $2',
-        [id, userId]
-      );
-    });
-
-    res.json({
-      message: 'Payment method set as default successfully'
-    });
-  } catch (error) {
-    console.error('Set default payment method error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'SET_DEFAULT_PAYMENT_METHOD_ERROR'
-    });
-  }
-});
-
-// @route   GET /api/payment/history
-// @desc    Get payment history
-// @access  Private
-router.get('/history', async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
-
-    const payments = await dbQueries.query(
-      `SELECT p.*, o.order_number, pm.payment_type, pm.last4
-       FROM payments p
-       JOIN orders o ON p.order_id = o.id
-       LEFT JOIN payment_methods pm ON p.payment_method_id = pm.id
-       WHERE p.user_id = $1
-       ORDER BY p.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [userId, limit, offset]
-    );
-
-    // Get total count
-    const countResult = await dbQueries.query(
-      'SELECT COUNT(*) as total FROM payments WHERE user_id = $1',
-      [userId]
-    );
-
-    const total = parseInt(countResult.rows[0].total);
-
-    res.json({
-      payments: payments.rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-        has_next: page * limit < total,
-        has_prev: page > 1
-      }
-    });
-  } catch (error) {
-    console.error('Get payment history error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_PAYMENT_HISTORY_ERROR'
-    });
-  }
-});
-
-// @route   GET /api/payment/refunds
-// @desc    Get user's refunds
-// @access  Private
-router.get('/refunds', async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
-
-    const refunds = await dbQueries.query(
-      `SELECT r.*, o.order_number
-       FROM refunds r
-       JOIN orders o ON r.order_id = o.id
-       WHERE r.user_id = $1
-       ORDER BY r.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [userId, limit, offset]
-    );
-
-    // Get total count
-    const countResult = await dbQueries.query(
-      'SELECT COUNT(*) as total FROM refunds WHERE user_id = $1',
-      [userId]
-    );
-
-    const total = parseInt(countResult.rows[0].total);
-
-    res.json({
-      refunds: refunds.rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-        has_next: page * limit < total,
-        has_prev: page > 1
-      }
-    });
-  } catch (error) {
-    console.error('Get refunds error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'GET_REFUNDS_ERROR'
-    });
-  }
-});
-
-// @route   POST /api/payment/process
-// @desc    Process payment
-// @access  Private
-router.post('/process', async (req, res) => {
-  try {
-    const { order_id, payment_method_id, amount } = req.body;
-    const userId = req.user.id;
-
-    if (!order_id || !payment_method_id || !amount) {
-      return res.status(400).json({ 
-        error: 'Order ID, payment method ID, and amount are required',
-        code: 'REQUIRED_FIELDS_MISSING'
-      });
-    }
-
-    // Get order details
-    const order = await dbQueries.query(
-      'SELECT * FROM orders WHERE id = $1 AND buyer_id = $2',
-      [order_id, userId]
-    );
-
-    if (order.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Order not found',
-        code: 'ORDER_NOT_FOUND'
-      });
-    }
-
-    // Get payment method
-    const paymentMethod = await dbQueries.query(
-      'SELECT * FROM payment_methods WHERE id = $1 AND user_id = $2',
-      [payment_method_id, userId]
-    );
-
-    if (paymentMethod.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Payment method not found',
-        code: 'PAYMENT_METHOD_NOT_FOUND'
-      });
-    }
-
-    // Verify amount matches order total
-    if (parseFloat(amount) !== parseFloat(order.rows[0].total)) {
-      return res.status(400).json({ 
-        error: 'Amount does not match order total',
-        code: 'AMOUNT_MISMATCH'
-      });
-    }
-
-    // Process payment (simulation)
-    const paymentResult = await processPayment({
-      amount: parseFloat(amount),
-      paymentMethod: paymentMethod.rows[0],
-      order: order.rows[0]
-    });
-
-    if (paymentResult.success) {
-      // Update order status
-      await dbQueries.query(
-        'UPDATE orders SET status = $1, payment_status = $2, payment_id = $3 WHERE id = $4',
-        ['confirmed', 'paid', paymentResult.payment_id, order_id]
-      );
-
-      res.json({
-        message: 'Payment processed successfully',
-        payment_id: paymentResult.payment_id,
-        status: 'completed'
-      });
-    } else {
-      res.status(400).json({ 
-        error: 'Payment failed',
-        code: 'PAYMENT_FAILED',
-        details: paymentResult.error
-      });
-    }
-  } catch (error) {
-    console.error('Process payment error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'PROCESS_PAYMENT_ERROR'
-    });
-  }
-});
-
-// @route   POST /api/payment/refund
-// @desc    Request refund
-// @access  Private
-router.post('/refund', async (req, res) => {
-  try {
-    const { order_id, reason } = req.body;
-    const userId = req.user.id;
-
-    if (!order_id || !reason) {
-      return res.status(400).json({ 
-        error: 'Order ID and reason are required',
-        code: 'REQUIRED_FIELDS_MISSING'
-      });
-    }
-
-    // Get order details
-    const order = await dbQueries.query(
-      'SELECT * FROM orders WHERE id = $1 AND buyer_id = $2',
-      [order_id, userId]
-    );
-
-    if (order.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Order not found',
-        code: 'ORDER_NOT_FOUND'
-      });
-    }
-
-    // Check if order is eligible for refund
-    if (!['delivered', 'cancelled'].includes(order.rows[0].status)) {
-      return res.status(400).json({ 
-        error: 'Order is not eligible for refund',
-        code: 'ORDER_NOT_ELIGIBLE_FOR_REFUND'
-      });
-    }
-
-    res.status(201).json({
-      message: 'Refund requested successfully',
-      order_id: order_id
-    });
-  } catch (error) {
-    console.error('Request refund error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      code: 'REQUEST_REFUND_ERROR'
-    });
-  }
-});
-
-// Mock payment processing function
-async function processPayment({ amount, paymentMethod, order }) {
-  // This is a simulation - replace with actual payment gateway integration
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      // Simulate 95% success rate
-      const success = Math.random() > 0.05;
-      
-      if (success) {
-        resolve({
-          success: true,
-          payment_id: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          amount,
-          status: 'completed',
-          gateway: 'mock_gateway'
-        });
-      } else {
-        resolve({
-          success: false,
-          error: 'Payment declined by bank'
-        });
-      }
-    }, 1000); // Simulate processing time
-  });
-}
 
 module.exports = router;

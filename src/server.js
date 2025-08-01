@@ -93,6 +93,9 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 console.log('✓ Rate limiting configured');
 
+// In your server.js
+// Removed duplicate paymentRoutes import and usage here
+
 // Basic middleware
 console.log('Setting up basic middleware...');
 app.use(compression());
