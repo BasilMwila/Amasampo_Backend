@@ -1,4 +1,6 @@
 /* eslint-disable linebreak-style */
+/* eslint-disable prefer-destructuring */
+/* eslint-disable linebreak-style */
 /* eslint-disable global-require */
 /* eslint-disable linebreak-style */
 /* eslint-disable prefer-const */
@@ -455,14 +457,18 @@ router.post('/product/:productId', async (req, res) => {
     const { message_text } = req.body;
     const userId = req.user.id;
 
+    console.log(`💬 Sending product message for product ${productId} from user ${userId}`);
+
     // Get product details
-    const product = await dbQueries.getProductById(productId);
-    if (!product) {
+    const productResult = await dbQueries.getProductById(productId);
+    if (!productResult || !productResult.product) {
       return res.status(404).json({ 
         error: 'Product not found',
         code: 'PRODUCT_NOT_FOUND'
       });
     }
+
+    const product = productResult.product;
 
     // Can't message about own product
     if (product.seller_id === userId) {
@@ -482,6 +488,7 @@ router.post('/product/:productId', async (req, res) => {
 
     let conversationId;
     if (conversation.rows.length === 0) {
+      console.log('📝 Creating new conversation for product message...');
       // Create new conversation
       const newConversation = await dbQueries.query(`
         INSERT INTO conversations (uuid, user1_id, user2_id, created_at, updated_at)
@@ -493,15 +500,38 @@ router.post('/product/:productId', async (req, res) => {
       conversationId = conversation.rows[0].id;
     }
 
-    // Generate UUID for the message
+    // Create product reference message with embedded product data
     const messageUuid = crypto.randomUUID();
+    
+    // Create a structured message with product information
+    const productMessageData = {
+      type: 'product_reference',
+      text: message_text || `Hi! I'm interested in this product.`,
+      product: {
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        image_url: product.image_url,
+        seller_name: product.seller_name,
+        category_name: product.category_name,
+        is_active: product.is_active,
+        quantity: product.quantity
+      }
+    };
 
-    // Send message to product seller
+    // Send the product reference message
     const message = await dbQueries.query(`
-      INSERT INTO messages (uuid, conversation_id, sender_id, receiver_id, message_text, message_type, product_id, status, is_read, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, 'product', $6, 'sent', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO messages (
+        uuid, conversation_id, sender_id, receiver_id, 
+        message_text, message_type, product_id, 
+        status, is_read, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, 'product_reference', $6, 'sent', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING *
-    `, [messageUuid, conversationId, userId, product.seller_id, message_text, productId]);
+    `, [
+      messageUuid, conversationId, userId, product.seller_id, 
+      JSON.stringify(productMessageData), productId
+    ]);
 
     // Update conversation
     await dbQueries.query(`
@@ -512,15 +542,171 @@ router.post('/product/:productId', async (req, res) => {
       WHERE id = $1
     `, [conversationId, message.rows[0].id]);
 
+    // Get the complete message data with sender info
+    const messageData = await dbQueries.query(`
+      SELECT m.*, u.name as sender_name
+      FROM messages m
+      JOIN users u ON m.sender_id = u.id
+      WHERE m.id = $1
+    `, [message.rows[0].id]);
+
+    console.log('✅ Product reference message sent successfully');
+    
     res.status(201).json({
-      message: 'Message sent to seller successfully',
-      data: message.rows[0]
+      message: 'Product message sent to seller successfully',
+      data: {
+        ...messageData.rows[0],
+        product_data: productMessageData.product // Include product data in response
+      }
     });
   } catch (error) {
     console.error('Send product message error:', error);
     res.status(500).json({ 
       error: 'Internal server error',
       code: 'SEND_PRODUCT_MESSAGE_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/messages/conversation/:userId
+// @desc    Get messages in a conversation with product data included
+// @access  Private
+router.get('/conversation/:userId', async (req, res) => {
+  try {
+    const { userId: otherUserId } = req.params;
+    const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+
+    console.log(`💬 Getting conversation between user ${userId} and user ${otherUserId}`);
+
+    // Verify other user exists
+    const otherUser = await dbQueries.findUserById(otherUserId);
+    if (!otherUser) {
+      return res.status(404).json({ 
+        error: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Find or create conversation using user1_id/user2_id
+    const conversation = await dbQueries.query(`
+      SELECT id FROM conversations 
+      WHERE (user1_id = $1 AND user2_id = $2) 
+         OR (user1_id = $2 AND user2_id = $1)
+      LIMIT 1
+    `, [userId, otherUserId]);
+
+    let conversationId;
+    if (conversation.rows.length === 0) {
+      console.log('📝 Creating new conversation...');
+      const newConversation = await dbQueries.query(`
+        INSERT INTO conversations (uuid, user1_id, user2_id, created_at, updated_at)
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id
+      `, [crypto.randomUUID(), userId, otherUserId]);
+      conversationId = newConversation.rows[0].id;
+    } else {
+      conversationId = conversation.rows[0].id;
+    }
+
+    // Get messages with product information
+    const messages = await dbQueries.query(`
+      SELECT 
+        m.*, 
+        u.name as sender_name,
+        p.name as product_name,
+        p.price as product_price,
+        p.image_url as product_image,
+        p.is_active as product_active,
+        p.quantity as product_quantity
+      FROM messages m
+      JOIN users u ON m.sender_id = u.id
+      LEFT JOIN products p ON m.product_id = p.id
+      WHERE m.conversation_id = $1
+      ORDER BY m.created_at DESC
+      LIMIT $2 OFFSET $3
+    `, [conversationId, limit, offset]);
+
+    // Process messages to include product data
+    const processedMessages = messages.rows.map(row => {
+      const message = {
+        id: row.id,
+        uuid: row.uuid,
+        conversation_id: row.conversation_id,
+        sender_id: row.sender_id,
+        receiver_id: row.receiver_id,
+        message_text: row.message_text,
+        message_type: row.message_type,
+        status: row.status,
+        is_read: row.is_read,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        sender_name: row.sender_name,
+        product_id: row.product_id
+      };
+
+      // If this is a product reference message, include product data
+      if (row.message_type === 'product_reference' && row.product_id) {
+        try {
+          // Try to parse the message_text as JSON (for new format)
+          const messageData = JSON.parse(row.message_text);
+          message.product_data = messageData.product;
+          message.text_content = messageData.text;
+        } catch (e) {
+          // Fallback to database product info for older messages
+          message.text_content = row.message_text;
+          if (row.product_name) {
+            message.product_data = {
+              id: row.product_id,
+              name: row.product_name,
+              price: row.product_price,
+              image_url: row.product_image,
+              is_active: row.product_active,
+              quantity: row.product_quantity
+            };
+          }
+        }
+      }
+
+      return message;
+    });
+
+    // Get total count
+    const countResult = await dbQueries.query(`
+      SELECT COUNT(*) as total
+      FROM messages
+      WHERE conversation_id = $1
+    `, [conversationId]);
+
+    const total = parseInt(countResult.rows[0].total);
+
+    console.log(`✅ Found ${processedMessages.length} messages in conversation ${conversationId}`);
+
+    res.json({
+      messages: processedMessages.reverse(), // Reverse to show oldest first
+      other_user: {
+        id: otherUser.id,
+        name: otherUser.name,
+        shop_name: otherUser.shop_name,
+        avatar_url: otherUser.avatar_url
+      },
+      conversation_id: conversationId,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        has_next: page * limit < total,
+        has_prev: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Get conversation error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_CONVERSATION_ERROR'
     });
   }
 });
