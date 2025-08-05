@@ -1,4 +1,10 @@
 /* eslint-disable linebreak-style */
+/* eslint-disable padded-blocks */
+/* eslint-disable linebreak-style */
+/* eslint-disable prefer-template */
+/* eslint-disable linebreak-style */
+/* eslint-disable no-restricted-globals */
+/* eslint-disable linebreak-style */
 /* eslint-disable prefer-destructuring */
 /* eslint-disable linebreak-style */
 /* eslint-disable global-require */
@@ -82,7 +88,7 @@ router.get('/test', (req, res) => {
   console.log('🧪 TEST ROUTE HIT - Messages routes are working');
   res.json({ 
     message: 'Messages routes are working', 
-    user: req.user?.id,
+    user: req.user && req.user.id,
     timestamp: new Date().toISOString()
   });
 });
