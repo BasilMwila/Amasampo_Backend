@@ -24,27 +24,54 @@ class LencoPaymentService {
   // Initialize Mobile Money Payment
   async initializeMobileMoneyPayment({
     amount,
-    currency = 'NGN',
+    currency = 'ZMW',
     phone,
     reference,
     description,
-    country = 'ng',
-    operator, // mtn, airtel, glo, 9mobile
+    country = 'zm',
+    operator, // mtn, airtel for Zambia
     bearer = 'merchant'
   }) {
     try {
       console.log('🔄 Initializing Lenco mobile money payment...', { amount, reference, operator });
       
+      // Use actual amount for payment
+      const paymentAmount = amount.toString();
+      console.log(`💡 Using payment amount: ${paymentAmount}`);
+      
+      // Clean and format phone number to match working Postman format: 0977433571
+      let cleanPhone = phone.toString().replace(/[^0-9]/g, ''); // Remove non-digits
+      
+      // Ensure we get the correct Zambian format: 0977433571 (10 digits starting with 0)
+      if (cleanPhone.length === 11 && cleanPhone.startsWith('09')) {
+        // Remove the extra leading 0: 09774335571 -> 9774335571, then add back proper 0
+        cleanPhone = '0' + cleanPhone.substring(2); // 09774335571 -> 0977433571
+      } else if (cleanPhone.length === 10 && cleanPhone.startsWith('9')) {
+        // Add leading 0: 9774335571 -> 0977433571  
+        cleanPhone = '0' + cleanPhone.substring(1);
+      } else if (cleanPhone.length === 9) {
+        // Add leading 0: 977433571 -> 0977433571
+        cleanPhone = '0' + cleanPhone;
+      }
+      // If already in correct format (0977433571), use as-is
+      
+      console.log(`📞 Phone number cleaning: ${phone} -> ${cleanPhone}`);
+      
       const paymentData = {
-        amount: amount.toString(), // Lenco expects string, not cents conversion
+        amount: paymentAmount, // Lenco expects string, not cents conversion
         currency,
         reference,
-        phone,
-        country,
+        phone: cleanPhone,
+        country: 'zm', // Force Zambia country code
         operator: operator.toLowerCase(),
-        bearer,
-        label: description || 'Payment'
+        bearer
       };
+
+      console.log('🔍 Full payment request details:', {
+        url: `${this.baseURL}/collections/mobile-money`,
+        headers: this.createHeaders(),
+        payload: paymentData
+      });
 
       const headers = this.createHeaders();
 
@@ -253,27 +280,21 @@ class LencoPaymentService {
     return [
       { 
         code: 'mtn', 
-        name: 'MTN', 
+        name: 'MTN Zambia', 
         logo: '/images/operators/mtn.png',
-        country: 'ng'
+        country: 'zm'
       },
       { 
         code: 'airtel', 
-        name: 'Airtel', 
+        name: 'Airtel Zambia', 
         logo: '/images/operators/airtel.png',
-        country: 'ng' 
+        country: 'zm' 
       },
       { 
-        code: 'glo', 
-        name: 'Glo', 
-        logo: '/images/operators/glo.png',
-        country: 'ng' 
-      },
-      { 
-        code: '9mobile', 
-        name: '9mobile', 
-        logo: '/images/operators/9mobile.png',
-        country: 'ng' 
+        code: 'zamtel', 
+        name: 'Zamtel', 
+        logo: '/images/operators/zamtel.png',
+        country: 'zm' 
       }
     ];
   }

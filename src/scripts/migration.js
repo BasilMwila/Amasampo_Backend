@@ -196,6 +196,33 @@ const migrations = [
     `
   },
   {
+    name: 'add_seller_id_to_order_items',
+    up: `
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = 'order_items' AND column_name = 'seller_id'
+        ) THEN
+          ALTER TABLE order_items 
+          ADD COLUMN seller_id INTEGER REFERENCES users(id);
+          
+          -- Update existing order_items with seller_id from products
+          UPDATE order_items 
+          SET seller_id = p.seller_id 
+          FROM products p 
+          WHERE order_items.product_id = p.id 
+          AND order_items.seller_id IS NULL;
+          
+          -- Create index for better performance
+          CREATE INDEX IF NOT EXISTS idx_order_items_seller_id ON order_items(seller_id);
+        END IF;
+      END
+      $$;
+    `
+  },
+  {
     name: 'create_order_status_history_table',
     up: `
       CREATE TABLE IF NOT EXISTS order_status_history (

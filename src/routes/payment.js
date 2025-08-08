@@ -98,7 +98,7 @@ router.post('/initialize/card', async (req, res) => {
     // Generate card payment configuration for widget
     const configResult = lencoPaymentService.generateCardPaymentConfig({
       amount: parseFloat(orderData.total),
-      currency: 'NGN',
+      currency: 'ZMW',
       email: orderData.email,
       phone: orderData.phone,
       firstName: orderData.name.split(' ')[0],
@@ -118,7 +118,7 @@ router.post('/initialize/card', async (req, res) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           userId, order_id, paymentReference, 'lenco', 'card',
-          orderData.total, 'NGN', 'pending', JSON.stringify(configResult.config)
+          orderData.total, 'ZMW', 'pending', JSON.stringify(configResult.config)
         ]
       );
 
@@ -157,7 +157,7 @@ router.post('/initialize/card', async (req, res) => {
 // @access  Private
 router.post('/initialize/mobile-money', async (req, res) => {
   try {
-    const { order_id, operator, phone, country = 'ng' } = req.body;
+    const { order_id, operator, phone, country = 'zm' } = req.body;
     const userId = req.user.id;
 
     if (!order_id || !operator || !phone) {
@@ -197,7 +197,7 @@ router.post('/initialize/mobile-money', async (req, res) => {
     // Initialize mobile money payment with Lenco
     const paymentResult = await lencoPaymentService.initializeMobileMoneyPayment({
       amount: parseFloat(orderData.total),
-      currency: 'NGN',
+      currency: 'ZMW',
       phone: phone,
       reference: paymentReference,
       description: `Payment for Order #${orderData.order_number}`,
@@ -215,7 +215,7 @@ router.post('/initialize/mobile-money', async (req, res) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           userId, order_id, paymentReference, 'lenco', 'mobile_money',
-          orderData.total, 'NGN', paymentResult.data.status, 
+          orderData.total, 'ZMW', paymentResult.data.status, 
           JSON.stringify(paymentResult.data), operator, paymentResult.data.lencoReference
         ]
       );

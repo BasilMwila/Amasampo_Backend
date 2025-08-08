@@ -98,12 +98,33 @@ const setupSocketHandlers = (io) => {
           return;
         }
 
-        // Save message to database
+        // Find or create conversation
+        let conversation = await dbQueries.query(`
+          SELECT id FROM conversations 
+          WHERE (user1_id = $1 AND user2_id = $2) 
+             OR (user1_id = $2 AND user2_id = $1)
+          LIMIT 1
+        `, [socket.user.id, recipientId]);
+
+        let conversationId;
+        if (conversation.rows.length === 0) {
+          console.log('📝 Creating new conversation for socket message...');
+          const newConversation = await dbQueries.query(`
+            INSERT INTO conversations (uuid, user1_id, user2_id, created_at, updated_at)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+          `, [require('crypto').randomUUID(), socket.user.id, recipientId]);
+          conversationId = newConversation.rows[0].id;
+        } else {
+          conversationId = conversation.rows[0].id;
+        }
+
+        // Save message to database with conversation_id
         const message = await dbQueries.query(`
-          INSERT INTO messages (sender_id, recipient_id, message_text, message_type, product_id)
-          VALUES ($1, $2, $3, $4, $5)
+          INSERT INTO messages (sender_id, receiver_id, message_text, message_type, conversation_id, is_read, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
           RETURNING *
-        `, [socket.user.id, recipientId, messageText, messageType, productId]);
+        `, [socket.user.id, recipientId, messageText, messageType, conversationId]);
 
         const messageData = {
           ...message.rows[0],
@@ -132,7 +153,8 @@ const setupSocketHandlers = (io) => {
           senderId: socket.user.id,
           senderName: socket.user.name,
           message: messageText,
-          messageType
+          messageType,
+          conversationId: conversationId
         });
 
       } catch (error) {

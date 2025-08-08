@@ -1,4 +1,6 @@
 /* eslint-disable linebreak-style */
+/* eslint-disable object-shorthand */
+/* eslint-disable linebreak-style */
 /* eslint-disable padded-blocks */
 /* eslint-disable linebreak-style */
 /* eslint-disable prefer-template */
@@ -633,6 +635,32 @@ router.post('/send', validateSendMessage, async (req, res) => {
     }
 
     console.log('✅ Message sent successfully');
+    
+    // Emit real-time message to both users
+    const io = req.app.get('io');
+    if (io) {
+      // Create chat room ID (consistent regardless of who joins first)
+      const chatRoomId = [senderId, recipient_id].sort().join('_');
+      
+      // Emit to all users in the chat room
+      io.to(chatRoomId).emit('new_message', {
+        ...messageData,
+        sender_name: req.user.name,
+        recipient_name: recipient.name
+      });
+      
+      // Also emit to recipient's personal room for notifications
+      io.to(`user_${recipient_id}`).emit('new_message_notification', {
+        senderId: senderId,
+        senderName: req.user.name,
+        message: message_text,
+        messageType: message_type,
+        conversationId: conversationId
+      });
+      
+      console.log(`📡 Real-time message emitted to room: ${chatRoomId}`);
+    }
+    
     res.status(201).json({
       message: 'Message sent successfully',
       data: messageData

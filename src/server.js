@@ -389,9 +389,15 @@ console.log('Adding error handling middleware...');
 app.use(errorHandler);
 console.log('✓ Error handling middleware added');
 
-// Setup socket handlers (commented out for now to test)
-// const { setupSocketHandlers } = require('./socket/handlers');
-// setupSocketHandlers(io);
+// Setup socket handlers
+console.log('Setting up Socket.IO handlers...');
+const { setupSocketHandlers } = require('./socket/handlers');
+setupSocketHandlers(io);
+console.log('✓ Socket.IO handlers configured');
+
+// Make io available to routes
+app.set('io', io);
+console.log('✓ Socket.IO instance attached to app');
 
 console.log('✅ All middleware and routes configured successfully!');
 

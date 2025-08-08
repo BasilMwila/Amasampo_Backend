@@ -14,6 +14,140 @@ const generateOrderNumber = () => {
   return `ORD-${timestamp}-${random}`;
 };
 
+// @route   POST /api/orders/from-cart
+// @desc    Create a new order from cart items
+// @access  Private (Buyers only)
+router.post('/from-cart', authenticateToken, authorize('buyer'), async (req, res) => {
+  try {
+    const { delivery_address, payment_method, phone_number, provider } = req.body;
+    const buyerId = req.user.id;
+
+    if (!delivery_address || !payment_method) {
+      return res.status(400).json({ 
+        error: 'Delivery address and payment method are required',
+        code: 'REQUIRED_FIELDS_MISSING'
+      });
+    }
+
+    // Get current cart items
+    const cartItems = await dbQueries.getCartItems(buyerId);
+    
+    if (!cartItems || cartItems.length === 0) {
+      return res.status(400).json({ 
+        error: 'Cart is empty',
+        code: 'EMPTY_CART'
+      });
+    }
+
+    // Create order from cart items
+    const orderDetails = await transaction(async (client) => {
+      let subtotal = 0;
+      const sellerIds = new Set();
+      const orderItems = [];
+
+      // Calculate totals and validate items
+      for (const item of cartItems) {
+        // Check quantity availability again
+        const product = await client.query(
+          'SELECT quantity FROM products WHERE id = $1 AND is_active = true',
+          [item.product_id]
+        );
+
+        if (product.rows.length === 0 || product.rows[0].quantity < item.quantity) {
+          throw new Error(`Product ${item.name} is no longer available in requested quantity`);
+        }
+
+        const itemSubtotal = parseFloat(item.price) * item.quantity;
+        subtotal += itemSubtotal;
+        sellerIds.add(item.seller_id);
+
+        orderItems.push({
+          product_id: item.product_id,
+          product_name: item.name,
+          product_image: item.image_url,
+          price: item.price,
+          quantity: item.quantity,
+          subtotal: itemSubtotal,
+          seller_id: item.seller_id
+        });
+      }
+
+      // Calculate fees (same as existing logic)
+      const deliveryFee = 2.50;
+      const serviceFee = subtotal * 0.03;
+      const tax = subtotal * 0.08;
+      const total = subtotal + deliveryFee + serviceFee + tax;
+
+      // Create order
+      const orderNumber = generateOrderNumber();
+      const primarySellerId = Array.from(sellerIds)[0];
+
+      const order = await client.query(`
+        INSERT INTO orders (
+          order_number, buyer_id, seller_id, status, payment_status,
+          subtotal, delivery_fee, service_fee, tax, total,
+          delivery_address_line1, delivery_city, delivery_state, delivery_country,
+          payment_method_type, estimated_delivery, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        RETURNING *
+      `, [
+        orderNumber, buyerId, primarySellerId, 'pending', 'pending',
+        subtotal, deliveryFee, serviceFee, tax, total,
+        delivery_address, 'City', 'State', 'Country', // Simplified for now
+        payment_method, new Date(Date.now() + 24 * 60 * 60 * 1000),
+        new Date(), new Date()
+      ]);
+
+      const orderId = order.rows[0].id;
+
+      // Insert order items
+      for (const orderItem of orderItems) {
+        await client.query(`
+          INSERT INTO order_items (
+            order_id, product_id, product_name, product_image,
+            price, quantity, subtotal
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [
+          orderId, orderItem.product_id,
+          orderItem.product_name, orderItem.product_image,
+          orderItem.price, orderItem.quantity, orderItem.subtotal
+        ]);
+      }
+
+      // Clear cart after order creation
+      await client.query('DELETE FROM cart_items WHERE user_id = $1', [buyerId]);
+
+      // Add order status history
+      await client.query(`
+        INSERT INTO order_status_history (order_id, status, note, created_at)
+        VALUES ($1, $2, $3, $4)
+      `, [orderId, 'pending', 'Order created', new Date()]);
+
+      return {
+        id: orderId,
+        order_number: orderNumber,
+        total: total.toFixed(2),
+        items: orderItems
+      };
+    });
+
+    console.log('✅ Order created from cart:', orderDetails.order_number);
+    
+    res.status(201).json({
+      message: 'Order created successfully',
+      data: orderDetails
+    });
+
+  } catch (error) {
+    console.error('❌ Create order from cart error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'CREATE_ORDER_ERROR',
+      details: error.message
+    });
+  }
+});
+
 // @route   POST /api/orders
 // @desc    Create a new order
 // @access  Private (Buyers only)

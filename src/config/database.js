@@ -624,7 +624,50 @@ async function fixDatabase() {
       console.error('⚠️  Messages table test failed:', error.message);
     }
     
-    // Test categories
+    // Fix order_items table if seller_id column is missing
+    try {
+      console.log('🔧 Checking order_items table structure...');
+      
+      const columnCheck = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'order_items' AND column_name = 'seller_id'
+      `);
+      
+      if (columnCheck.rows.length === 0) {
+        console.log('📋 Adding missing seller_id column to order_items table...');
+        
+        // Add seller_id column
+        await client.query(`
+          ALTER TABLE order_items 
+          ADD COLUMN seller_id INTEGER REFERENCES users(id)
+        `);
+        
+        // Update existing order_items with seller_id from products
+        const updateResult = await client.query(`
+          UPDATE order_items 
+          SET seller_id = p.seller_id 
+          FROM products p 
+          WHERE order_items.product_id = p.id 
+          AND order_items.seller_id IS NULL
+        `);
+        
+        // Create index for better performance
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_order_items_seller_id ON order_items(seller_id)
+        `);
+        
+        console.log(`✅ Fixed order_items table: added seller_id column and updated ${updateResult.rowCount} existing records`);
+        
+      } else {
+        console.log('✅ order_items table already has seller_id column');
+      }
+      
+    } catch (error) {
+      console.error('⚠️  Order items table fix failed:', error.message);
+    }
+
+  // Test categories
     try {
       const testResult = await client.query(`
         SELECT c.*, 
@@ -956,8 +999,8 @@ const dbQueries = {
   getCartItems: async (userId) => {
     const result = await query(
       `SELECT ci.*, p.name, p.price, p.image_url, p.quantity as available_quantity,
-              u.name as seller_name, u.shop_name,
-              (ci.price * ci.quantity) as subtotal
+              u.name as seller_name, u.shop_name, p.seller_id,
+              (p.price * ci.quantity) as subtotal
        FROM cart_items ci
        JOIN products p ON ci.product_id = p.id
        JOIN users u ON p.seller_id = u.id
