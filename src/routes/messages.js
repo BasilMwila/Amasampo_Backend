@@ -48,6 +48,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
+const { sendMessageNotification } = require('./notifications');
 const { dbQueries } = require('../config/database');
 
 // Simple validation middleware (since validation/schemas might not exist)
@@ -635,6 +636,20 @@ router.post('/send', validateSendMessage, async (req, res) => {
     }
 
     console.log('✅ Message sent successfully');
+    
+    // Send push notification to recipient
+    try {
+      const senderName = messageData.sender_name || req.user.name;
+      await sendMessageNotification({
+        recipientId: recipient_id,
+        senderName,
+        message: message_text,
+        senderId
+      });
+      console.log('📱 Push notification sent for new message');
+    } catch (pushError) {
+      console.warn('⚠️ Failed to send push notification for message:', pushError.message);
+    }
     
     // Emit real-time message to both users
     const io = req.app.get('io');

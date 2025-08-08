@@ -357,6 +357,25 @@ const migrations = [
       
       CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id);
     `
+  },
+  {
+    name: 'create_user_push_tokens_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS user_push_tokens (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        push_token TEXT NOT NULL,
+        device_type VARCHAR(50) DEFAULT 'unknown',
+        device_id VARCHAR(255) DEFAULT 'default',
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, device_id)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_user_push_tokens_user_id ON user_push_tokens(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_push_tokens_is_active ON user_push_tokens(is_active);
+    `
   }
 ];
 

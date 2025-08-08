@@ -6,6 +6,7 @@ const { dbQueries, transaction } = require('../config/database');
 const { authenticateToken, authorize } = require('../middleware/auth');
 const { orderSchemas, validate } = require('../validation/schemas');
 const { v4: uuidv4 } = require('uuid');
+const { sendOrderNotification } = require('./notifications');
 
 // Generate order number
 const generateOrderNumber = () => {
@@ -500,6 +501,19 @@ router.put('/:id/status', authenticateToken, authorize('seller'), validate(order
        VALUES ($1, 'order', 'Order Status Updated', $2, $3, 'medium')`,
       [order.buyer_id, notificationMessage, id]
     );
+
+    // Send push notification
+    try {
+      await sendOrderNotification({
+        orderId: id,
+        buyerId: order.buyer_id,
+        sellerId: order.seller_id,
+        status,
+        orderNumber: order.order_number
+      });
+    } catch (pushError) {
+      console.warn('⚠️ Failed to send push notification for order update:', pushError.message);
+    }
 
     res.json({
       message: 'Order status updated successfully',
