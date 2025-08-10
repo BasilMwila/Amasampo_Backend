@@ -280,6 +280,317 @@ router.get('/seller/:id', async (req, res) => {
   }
 });
 
+// @route   GET /api/users/sellers/locations
+// @desc    Get sellers with location data for map
+// @access  Public
+router.get('/sellers/locations', async (req, res) => {
+  try {
+    const { city, state, country, bounds } = req.query;
+
+    let queryText = `
+      SELECT id, name, shop_name, shop_address, shop_city, shop_state, shop_country,
+             latitude, longitude, avatar_url, business_hours, shop_description,
+             (SELECT COUNT(*) FROM products WHERE seller_id = users.id AND is_active = true) as product_count,
+             (SELECT AVG(rating) FROM reviews r 
+              JOIN products p ON r.product_id = p.id 
+              WHERE p.seller_id = users.id) as average_rating
+      FROM users 
+      WHERE user_type = 'seller' AND is_active = true 
+        AND latitude IS NOT NULL AND longitude IS NOT NULL
+    `;
+    
+    const params = [];
+    let paramCount = 1;
+
+    // Filter by city if provided
+    if (city) {
+      queryText += ` AND shop_city ILIKE $${paramCount}`;
+      params.push(`%${city}%`);
+      paramCount++;
+    }
+
+    // Filter by state if provided
+    if (state) {
+      queryText += ` AND shop_state ILIKE $${paramCount}`;
+      params.push(`%${state}%`);
+      paramCount++;
+    }
+
+    // Filter by country if provided
+    if (country) {
+      queryText += ` AND shop_country ILIKE $${paramCount}`;
+      params.push(`%${country}%`);
+      paramCount++;
+    }
+
+    // Filter by map bounds if provided (southwest and northeast coordinates)
+    if (bounds) {
+      try {
+        const { swLat, swLng, neLat, neLng } = JSON.parse(bounds);
+        queryText += ` AND latitude BETWEEN $${paramCount} AND $${paramCount + 1}`;
+        queryText += ` AND longitude BETWEEN $${paramCount + 2} AND $${paramCount + 3}`;
+        params.push(swLat, neLat, swLng, neLng);
+        paramCount += 4;
+      } catch (error) {
+        console.warn('Invalid bounds parameter:', bounds);
+      }
+    }
+
+    queryText += ' ORDER BY product_count DESC, created_at DESC';
+
+    const result = await dbQueries.query(queryText, params);
+
+    // Process the results
+    const sellers = result.rows.map(seller => ({
+      ...seller,
+      latitude: parseFloat(seller.latitude),
+      longitude: parseFloat(seller.longitude),
+      product_count: parseInt(seller.product_count) || 0,
+      average_rating: parseFloat(seller.average_rating) || 0,
+      business_hours: seller.business_hours || null
+    }));
+
+    res.json({
+      sellers,
+      total: sellers.length
+    });
+  } catch (error) {
+    console.error('Get sellers locations error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_SELLERS_LOCATIONS_ERROR'
+    });
+  }
+});
+
+// @route   GET /api/users/seller/:id/profile
+// @desc    Get complete seller profile with products catalog
+// @access  Public
+router.get('/seller/:id/profile', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const category = req.query.category;
+    const sort = req.query.sort || 'newest'; // newest, price_low, price_high, popular
+    const offset = (page - 1) * limit;
+
+    // Get seller profile with location data
+    const sellerQuery = await dbQueries.query(
+      `SELECT id, name, shop_name, shop_address, shop_city, shop_state, shop_country,
+              latitude, longitude, avatar_url, business_hours, shop_description, 
+              phone, created_at,
+              (SELECT COUNT(*) FROM products WHERE seller_id = users.id AND is_active = true) as product_count,
+              (SELECT AVG(rating) FROM reviews r 
+               JOIN products p ON r.product_id = p.id 
+               WHERE p.seller_id = users.id) as average_rating,
+              (SELECT COUNT(*) FROM orders WHERE seller_id = users.id) as total_orders
+       FROM users 
+       WHERE id = $1 AND user_type = 'seller' AND is_active = true`,
+      [id]
+    );
+
+    if (sellerQuery.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Seller not found',
+        code: 'SELLER_NOT_FOUND'
+      });
+    }
+
+    const seller = {
+      ...sellerQuery.rows[0],
+      latitude: sellerQuery.rows[0].latitude ? parseFloat(sellerQuery.rows[0].latitude) : null,
+      longitude: sellerQuery.rows[0].longitude ? parseFloat(sellerQuery.rows[0].longitude) : null,
+      product_count: parseInt(sellerQuery.rows[0].product_count) || 0,
+      average_rating: parseFloat(sellerQuery.rows[0].average_rating) || 0,
+      total_orders: parseInt(sellerQuery.rows[0].total_orders) || 0,
+      business_hours: sellerQuery.rows[0].business_hours || null
+    };
+
+    // Build products query
+    let productsQueryText = `
+      SELECT p.*, c.name as category_name,
+             (SELECT AVG(rating) FROM reviews WHERE product_id = p.id) as rating,
+             (SELECT COUNT(*) FROM reviews WHERE product_id = p.id) as review_count
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.seller_id = $1 AND p.is_active = true
+    `;
+    
+    const productsParams = [id];
+    let productsParamCount = 2;
+
+    // Filter by category if provided
+    if (category && category !== 'all') {
+      productsQueryText += ` AND c.name ILIKE $${productsParamCount}`;
+      productsParams.push(`%${category}%`);
+      productsParamCount++;
+    }
+
+    // Add sorting
+    switch (sort) {
+      case 'price_low':
+        productsQueryText += ' ORDER BY p.price ASC';
+        break;
+      case 'price_high':
+        productsQueryText += ' ORDER BY p.price DESC';
+        break;
+      case 'popular':
+        productsQueryText += ' ORDER BY p.view_count DESC, p.created_at DESC';
+        break;
+      case 'rating':
+        productsQueryText += ' ORDER BY (SELECT AVG(rating) FROM reviews WHERE product_id = p.id) DESC NULLS LAST';
+        break;
+      default: // newest
+        productsQueryText += ' ORDER BY p.created_at DESC';
+    }
+
+    productsQueryText += ` LIMIT $${productsParamCount} OFFSET $${productsParamCount + 1}`;
+    productsParams.push(limit, offset);
+
+    const productsResult = await dbQueries.query(productsQueryText, productsParams);
+
+    // Get total products count
+    let countQuery = `
+      SELECT COUNT(*) as total 
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.seller_id = $1 AND p.is_active = true
+    `;
+    const countParams = [id];
+
+    if (category && category !== 'all') {
+      countQuery += ' AND c.name ILIKE $2';
+      countParams.push(`%${category}%`);
+    }
+
+    const countResult = await dbQueries.query(countQuery, countParams);
+    const totalProducts = parseInt(countResult.rows[0].total);
+
+    // Get product categories for this seller
+    const categoriesResult = await dbQueries.query(
+      `SELECT DISTINCT c.id, c.name, COUNT(p.id) as product_count
+       FROM categories c
+       JOIN products p ON c.id = p.category_id
+       WHERE p.seller_id = $1 AND p.is_active = true
+       GROUP BY c.id, c.name
+       ORDER BY product_count DESC, c.name ASC`,
+      [id]
+    );
+
+    // Process products with proper price conversion
+    const products = productsResult.rows.map(product => ({
+      ...product,
+      price: parseFloat(product.price) || 0,
+      original_price: product.original_price ? parseFloat(product.original_price) : null,
+      rating: parseFloat(product.rating) || 0,
+      review_count: parseInt(product.review_count) || 0
+    }));
+
+    res.json({
+      seller,
+      products,
+      categories: categoriesResult.rows.map(cat => ({
+        ...cat,
+        product_count: parseInt(cat.product_count)
+      })),
+      pagination: {
+        page,
+        limit,
+        total: totalProducts,
+        pages: Math.ceil(totalProducts / limit),
+        has_next: page * limit < totalProducts,
+        has_prev: page > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Get seller profile error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'GET_SELLER_PROFILE_ERROR'
+    });
+  }
+});
+
+// @route   PUT /api/users/seller/location
+// @desc    Update seller location information
+// @access  Private (sellers only)
+router.put('/seller/location', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userType = req.user.user_type;
+
+    if (userType !== 'seller') {
+      return res.status(403).json({ 
+        error: 'Only sellers can update location information',
+        code: 'SELLER_REQUIRED'
+      });
+    }
+
+    const {
+      shop_address,
+      shop_city,
+      shop_state,
+      shop_country,
+      latitude,
+      longitude,
+      business_hours,
+      shop_description
+    } = req.body;
+
+    // Validate required fields
+    if (!shop_address || !shop_city || !latitude || !longitude) {
+      return res.status(400).json({ 
+        error: 'Address, city, latitude, and longitude are required',
+        code: 'MISSING_LOCATION_FIELDS'
+      });
+    }
+
+    // Validate coordinates
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return res.status(400).json({ 
+        error: 'Invalid coordinates provided',
+        code: 'INVALID_COORDINATES'
+      });
+    }
+
+    const updateData = {
+      shop_address,
+      shop_city,
+      shop_state,
+      shop_country: shop_country || 'Ghana',
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      business_hours: business_hours ? JSON.stringify(business_hours) : null,
+      shop_description
+    };
+
+    const updatedUser = await dbQueries.updateUser(userId, updateData);
+
+    res.json({
+      message: 'Location information updated successfully',
+      location: {
+        shop_address: updatedUser.shop_address,
+        shop_city: updatedUser.shop_city,
+        shop_state: updatedUser.shop_state,
+        shop_country: updatedUser.shop_country,
+        latitude: parseFloat(updatedUser.latitude),
+        longitude: parseFloat(updatedUser.longitude),
+        business_hours: updatedUser.business_hours,
+        shop_description: updatedUser.shop_description
+      }
+    });
+
+  } catch (error) {
+    console.error('Update seller location error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      code: 'UPDATE_SELLER_LOCATION_ERROR'
+    });
+  }
+});
+
 // @route   DELETE /api/users/account
 // @desc    Delete user account (soft delete)
 // @access  Private

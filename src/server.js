@@ -291,14 +291,27 @@ try {
   process.exit(1);
 }
 
+try {
+  console.log('Registering public seller routes at /api/sellers...');
+  // Import the user routes and extract public endpoints
+  const publicSellerRoutes = require('./routes/public-sellers');
+  app.use('/api/sellers', publicSellerRoutes);
+  console.log('✓ Public seller routes registered successfully');
+} catch (error) {
+  console.error('❌ Error registering public seller routes:', error.message);
+  console.error('Stack:', error.stack);
+  process.exit(1);
+}
+
 console.log('✅ Public routes registered successfully!');
 console.log('🔐 Starting protected route registration...');
 
 // Protected API Routes (authentication required)
 try {
-  console.log('Registering user routes at /api/users with auth...');
-  app.use('/api/users', authenticateToken, userRoutes);
-  console.log('✓ User routes registered successfully');
+  console.log('Registering protected user routes at /api/user with auth...');
+  // Mount protected user routes on /api/user (singular) to avoid conflicts with public /api/users
+  app.use('/api/user', authenticateToken, userRoutes);
+  console.log('✓ Protected user routes registered successfully');
 } catch (error) {
   console.error('❌ Error registering user routes:', error.message);
   console.error('Stack:', error.stack);
